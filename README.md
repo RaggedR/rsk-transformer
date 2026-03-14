@@ -4,6 +4,10 @@ A neural network that learns the **inverse Robinson-Schensted-Knuth corresponden
 
 Achieves **100% exact-match accuracy** on held-out test data for permutations up to n=10, significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb) which only achieved weak baselines on this task.
 
+For a detailed writeup of the architecture, training, and results, see [SUMMARY.md](SUMMARY.md).
+
+**Links**: [Training data (HuggingFace)](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_10) | [Trained models (HuggingFace)](https://huggingface.co/RobBobin/rsk-transformer) *(coming soon)*
+
 ## Results
 
 | n | \|S_n\| | Training data | Model params | Test exact match | Best epoch |
@@ -84,8 +88,6 @@ python rsk.py
 --resume                  Resume training from existing checkpoint
 ```
 
-For a detailed writeup of the architecture, training, and results, see [SUMMARY.md](SUMMARY.md).
-
 ## Project Structure
 
 ```
@@ -114,9 +116,10 @@ If you use this work, please cite:
 
 ```
 @software{rsk_transformer,
+  author={Langer, Robin},
   title={Learning the RSK Correspondence with Transformers},
   year={2026},
-  url={https://github.com/...}
+  url={https://github.com/RaggedR/rsk-transformer}
 }
 ```
 
