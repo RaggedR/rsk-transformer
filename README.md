@@ -2,21 +2,21 @@
 
 A neural network that learns the **inverse Robinson-Schensted-Knuth correspondence**: given a pair of standard Young tableaux (P, Q), predict the permutation σ that produced them.
 
-Achieves **100% exact-match accuracy** on held-out test data for permutations up to n=10, significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb/tree/master/rsk) which only achieved weak baselines on this task.
+Achieves **100% exact-match accuracy** on held-out test data for n=10 and **99.99%** for n=15 (1.3 trillion permutations), significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb/tree/master/rsk) which only achieved weak baselines on this task.
 
 For a detailed writeup of the architecture, training, and results, see [SUMMARY.md](SUMMARY.md).
 
-**Links**: [Training data (HuggingFace)](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_10) | [Trained models (HuggingFace)](https://huggingface.co/RobBobin/rsk-transformer) *(coming soon)*
+**Links**: [Trained models (HuggingFace)](https://huggingface.co/RobBobin/rsk-transformer) | HuggingFace datasets: [n=8](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_8), [n=9](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_9), [n=10](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_10)
 
 ## Results
 
-| n | \|S_n\| | Training data | Model params | Test exact match | Best epoch |
-|---|---------|--------------|-------------|-----------------|------------|
-| 8 | 40,320 | 29,031 (72% of S_n) | 1,202,368 | 99.95% | 23 |
-| 10 | 3,628,800 | 500,000 (14% of S_n) | 1,207,012 | **100.00%** | 28 |
-| 15 | 1.3 × 10¹² | 500,000 (0.00004%) | 1,225,057 | **99.65%** | 24 |
+| n | \|S_n\| | Training data | Source | Model params | Test exact match | Best epoch |
+|---|---------|--------------|--------|-------------|-----------------|------------|
+| 8 | 40,320 | 29,031 (72% of S_n) | [HuggingFace](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_8) | 1,202,368 | 99.95% | 23 |
+| 10 | 3,628,800 | 500,000 (14% of S_n) | sampling | 1,207,012 | **100.00%** | 28 |
+| 15 | 1.3 × 10¹² | 500,000 (0.00004%) | sampling | 1,225,057 | **99.99%** | 52 |
 
-The n=10 result rules out memorisation: a 1.2M-parameter model trained on 14% of the permutation space achieves perfect accuracy on 50,000 unseen test permutations. The same architecture (without scaling) is applied to all values of n.
+The n=10 result rules out memorisation: a 1.2M-parameter model trained on 14% of the permutation space achieves perfect accuracy on 50,000 unseen test permutations. At n=15 (1.3 trillion permutations), the same architecture trained on 0.00004% of the space gets 49,995 out of 50,000 held-out permutations exactly right — unambiguous algorithmic generalisation.
 
 ## Key Idea: Structured 2D Token Embeddings
 
@@ -65,7 +65,7 @@ python rsk.py
 
 | Source | Flag | Description |
 |--------|------|-------------|
-| HuggingFace | `--source hf` | [ACDRepo](https://huggingface.co/datasets/ACDRepo) datasets for n=8,9,10. Full enumeration with 80/20 split. |
+| HuggingFace | `--source hf` | [ACDRepo](https://huggingface.co/ACDRepo) datasets for [n=8](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_8), [n=9](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_9), [n=10](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_10). Full enumeration with 80/20 split. |
 | Sampling | `--source sample` | Random permutations with on-the-fly RSK computation. Works for **any n**. Use `--train-size` to control dataset size. |
 | Generate | `--source generate` | Enumerates all n! permutations locally. Only feasible for n ≤ ~8. |
 
@@ -108,7 +108,7 @@ The **forward** direction (σ → P, Q) uses Schensted row insertion (the bumpin
 
 At n=10, there are 3,628,800 permutations. The model has 1.2M parameters and was trained on 500,000 samples (14% of the space). A lookup table would need at least 3.6M × 10 = 36M values to store the full mapping — 30× more than the model's parameter count. Yet the model achieves 100% accuracy on held-out samples.
 
-At n=15, there are 1.3 trillion permutations. The model sees 0.00004% of the space during training. Any success here is unambiguously algorithmic generalisation.
+At n=15, there are 1.3 trillion permutations. The model sees 0.00004% of the space during training and gets 99.99% exact match — unambiguously algorithmic generalisation. A baseline MLP on the same data achieves only 3.07%, showing the transformer's structured 2D embedding and attention are essential.
 
 ## Citation
 

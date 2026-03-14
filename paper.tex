@@ -1,0 +1,301 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=blue!70!black,
+    urlcolor=blue!70!black
+}
+
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue!70!black},
+    commentstyle=\color{gray},
+    stringstyle=\color{red!70!black},
+    showstringspaces=false,
+    frame=single,
+    framesep=3pt,
+    xleftmargin=3pt,
+    xrightmargin=3pt,
+    breaklines=true,
+    columns=fullflexible,
+}
+
+\title{\textbf{Learning the Inverse RSK Correspondence\\with Transformers}}
+\author{Robin Langer\\[4pt]
+\small \url{https://github.com/RaggedR/rsk-transformer}}
+\date{March 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We train an encoder-only transformer to learn the inverse Robinson--Schensted--Knuth (RSK) correspondence: given a pair of standard Young tableaux $(P, Q)$, predict the permutation~$\sigma$ that produced them. The key idea is to encode each tableau entry as a token with four learned embeddings (value, row, column, tableau identity), preserving the 2D geometric structure that governs Schensted insertion. On $n=10$ permutations, the model achieves \textbf{100\% exact-match accuracy} on 50,000 held-out test samples, having been trained on only 14\% of the permutation space with 1.2M parameters---ruling out memorisation. On $n=15$ (1.3 trillion permutations), training on 0.00004\% of the space yields 99.99\% exact match. This significantly improves on the PNNL ML4AlgComb benchmark, which achieved only weak baselines using flat bracket-string encoding.
+\end{abstract}
+
+\section{Introduction}
+
+The Robinson--Schensted--Knuth correspondence~\cite{knuth1970,schensted1961} is a bijection central to algebraic combinatorics:
+\[
+\sigma \in S_n \;\longleftrightarrow\; (P, Q) \text{ pair of standard Young tableaux of shape } \lambda \vdash n
+\]
+
+The \emph{forward} direction $(\sigma \to P, Q)$ uses Schensted row insertion: scan each $\sigma(i)$, bump entries through rows, and record where new cells appear. The \emph{inverse} $(P, Q \to \sigma)$ uses reverse bumping, processing entries in decreasing order. For a detailed treatment, see Langer~\cite{langer2013}, Chapter~2, \S2.1--2.2, pp.~25--43; the reverse algorithm specifically is described in \S2.2.5, p.~41.
+
+We train a neural network to learn the inverse direction: given~$P$ and~$Q$, predict~$\sigma$.
+
+\subsection{Prior Work}
+
+The PNNL ML4AlgComb benchmark~\cite{pnnl} attempted this with tableaux encoded as bracket strings: \texttt{"[[1,3,5],[2,4]]"} tokenised character-by-character. They used sequence-to-sequence models treating the problem as string transduction, achieving only weak baselines.
+
+The failure is structural: bracket-string encoding destroys the 2D geometric structure of tableaux. The model must re-learn that \texttt{1} at position~7 in the string means ``row~0, column~0''---information that was explicit in the tableau but is now buried in syntax.
+
+\section{Architecture: RSKEncoder}
+
+\subsection{Input Encoding: Structured 2D Tokens}
+
+Each entry in $P$ and $Q$ becomes a token. For $n$~entries per tableau, we get $2n$~tokens. Each token carries four properties: its numeric value, its row, its column, and which tableau ($P$ or~$Q$) it belongs to.
+
+The embedding is four learned lookup tables, summed:
+\begin{equation}
+\mathrm{emb}(\text{entry}) = \mathrm{value\_emb}(v) + \mathrm{row\_emb}(r) + \mathrm{col\_emb}(c) + \mathrm{tableau\_emb}(t)
+\end{equation}
+Each lookup table is an \texttt{nn.Embedding} mapping indices to learned 128-dimensional vectors. The sum produces a single 128-d vector per token, followed by LayerNorm and dropout.
+
+\textbf{Comparison to standard LLM embeddings.} This mirrors the GPT-2 embedding pattern~\cite{raschka2024} where $x = \mathrm{token\_emb}(\text{id}) + \mathrm{pos\_emb}(\text{position})$---two lookup tables summed. We extend this from two tables (what + where-in-1D) to four (what + row + column + which-tableau), reflecting that tableaux are 2D objects that come in pairs.
+
+\textbf{Why sum rather than concatenate.} Concatenating would give a $4 \times 128 = 512$-dimensional input. Summing keeps the dimension at~128, relying on the network learning roughly orthogonal directions for the different properties in high-dimensional space.
+
+\subsection{Transformer Encoder}
+
+The embedded tokens pass through a 6-layer \texttt{TransformerEncoder} with:
+\begin{itemize}[nosep]
+    \item $d_{\text{model}} = 128$, 8 attention heads ($d_k = 16$)
+    \item Feed-forward dimension 512 with GELU activation
+    \item Pre-norm (LayerNorm before attention/FFN), dropout 0.1
+    \item \textbf{No causal mask}: all $2n$ tokens attend to all others simultaneously
+\end{itemize}
+
+This is BERT-style (encoder-only, bidirectional) rather than GPT-style (decoder, causal). Since $(P, Q)$ fully determines~$\sigma$, all information is in the input---autoregressive decoding is unnecessary.
+
+\subsection{Classification Heads and Decoding}
+
+After the encoder, all $2n$ token representations are \textbf{mean-pooled} into a single 128-d vector. This feeds into $n$~parallel linear heads, each producing $n$~logits:
+\[
+\text{logits}[b, i, j] = \log\text{-probability that } \sigma(i{+}1) = j{+}1
+\]
+
+\textbf{Masked greedy decoding} (inference only) enforces the permutation constraint:
+\begin{enumerate}[nosep]
+    \item Find the global $(\text{position}, \text{value})$ pair with highest logit
+    \item Lock that assignment
+    \item Mask that position and value from future consideration
+    \item Repeat $n$~times
+\end{enumerate}
+This guarantees a valid permutation in $O(n^2)$ time.
+
+\subsection{Parameter Count}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lr}
+\toprule
+Component & Parameters \\
+\midrule
+Embedding tables & $(3n + 3) \times 128$ \\
+6 transformer layers & $\sim$1.18M \\
+$n$ classification heads & $n \times (128n + n)$ \\
+\midrule
+\textbf{Total ($n{=}8$)} & \textbf{1,202,368} \\
+\textbf{Total ($n{=}10$)} & \textbf{1,207,012} \\
+\textbf{Total ($n{=}15$)} & \textbf{1,225,057} \\
+\bottomrule
+\end{tabular}
+\caption{The 6-layer transformer backbone dominates. Changing $n$ only affects embedding tables and head sizes.}
+\end{table}
+
+\section{Training}
+
+\subsection{Hyperparameters}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+Hyperparameter & Value \\
+\midrule
+Optimizer & AdamW \\
+Learning rate & $3 \times 10^{-4}$ \\
+Weight decay & 0.01 \\
+Schedule & Linear warmup (5\%) $\to$ cosine decay \\
+Gradient clipping & max norm 1.0 \\
+Batch size & 512 \\
+Loss & Cross-entropy (summed over $n$ heads) \\
+Early stopping & Patience 10 on val greedy exact match \\
+\bottomrule
+\end{tabular}
+\caption{Standard transformer training defaults. No systematic hyperparameter search was performed.}
+\end{table}
+
+\subsection{Data}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{rrlrrr}
+\toprule
+$n$ & $|S_n|$ & Source & Train & Val & Test \\
+\midrule
+8 & 40{,}320 & HuggingFace~\cite{acdrepo} & 29{,}031 (72\%) & 3{,}225 & 8{,}064 \\
+10 & 3{,}628{,}800 & Random sampling & 500{,}000 (14\%) & 50{,}000 & 50{,}000 \\
+15 & $1.3 \times 10^{12}$ & Random sampling & 500{,}000 & 50{,}000 & 50{,}000 \\
+\bottomrule
+\end{tabular}
+\caption{For $n=10$ and $n=15$, data is generated on the fly: sample a random permutation, compute RSK forward to get $(P, Q)$, encode as structured tokens. Each epoch sees fresh random permutations for training; validation and test sets are fixed (seeded).}
+\end{table}
+
+\subsection{Hardware}
+
+All training was done on an Apple M4 Max (MacBook Pro) using the PyTorch MPS backend. Epoch times: $\sim$15s at $n{=}8$, $\sim$35s at $n{=}10$, and 10--18 minutes at $n{=}15$ (with intermittent thermal throttling). Total wall time ranged from $\sim$8 minutes ($n{=}8$) to $\sim$6--10 hours ($n{=}15$). No multi-GPU or cloud compute was used.
+
+\section{Results}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{rrcccc}
+\toprule
+$n$ & $|S_n|$ & Train fraction & Greedy exact & Argmax exact & Best epoch \\
+\midrule
+8 & 40{,}320 & 72\% & 99.95\% & 99.80\% & 23 \\
+10 & 3{,}628{,}800 & 14\% & \textbf{100.00\%} & \textbf{100.00\%} & 28 \\
+15 & $1.3 \times 10^{12}$ & 0.00004\% & \textbf{99.99\%} & 99.98\% & 52 \\
+\bottomrule
+\end{tabular}
+\caption{Test set results. ``Greedy exact'' uses masked greedy decoding; ``argmax exact'' uses unconstrained per-position argmax.}
+\end{table}
+
+\textbf{$n{=}10$}: Both argmax and greedy achieve 100\% on 50{,}000 held-out test samples. The model's per-position predictions are so confident that it never assigns the same value to two positions.
+
+\textbf{$n{=}15$}: 99.99\% greedy exact = 49{,}995 out of 50{,}000 permutations exactly correct. Per-position accuracy is 100.00\%. The greedy--argmax gap is negligible (99.99\% vs 99.98\%), indicating the model's per-position predictions almost never violate the permutation constraint.
+
+\subsection{Ablation: Transformer vs MLP}
+
+To isolate the contribution of structured 2D embedding and self-attention, we compare against a baseline MLP that receives the same data but flattens it to a vector.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llrrrr}
+\toprule
+$n$ & Model & Parameters & Greedy exact & Argmax exact & Per-position \\
+\midrule
+10 & \textbf{RSKEncoder} & 1,207,012 & \textbf{100.00\%} & \textbf{100.00\%} & \textbf{100.00\%} \\
+10 & BaselineMLP & 133,604 & 95.67\% & 90.31\% & 98.85\% \\
+\midrule
+15 & \textbf{RSKEncoder} & 1,225,057 & \textbf{99.99\%} & \textbf{99.98\%} & \textbf{100.00\%} \\
+15 & BaselineMLP & 133,604 & 3.07\% & 0.04\% & 62.02\% \\
+\bottomrule
+\end{tabular}
+\caption{The MLP collapses from 95.67\% to 3.07\% as $n$ increases from 10 to 15, while the transformer barely notices the increase (100\% $\to$ 99.99\%). Without spatial structure, the MLP cannot coordinate predictions across positions.}
+\end{table}
+
+\section{The Memorisation Question}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{rrrrl}
+\toprule
+$n$ & Parameters & Unique inputs & Params/input & Verdict \\
+\midrule
+8 & 1.2M & 40{,}320 & 29.8 & Ambiguous \\
+10 & 1.2M & 3{,}628{,}800 & 0.33 & \textbf{Cannot memorise} \\
+15 & 1.2M & $1.3 \times 10^{12}$ & $9.4 \times 10^{-7}$ & \textbf{Provably algorithmic} \\
+\bottomrule
+\end{tabular}
+\caption{At $n{=}10$, a lookup table would need at least 36M entries---30$\times$ the model's parameter count. At $n{=}15$, the model has seen 0.00004\% of the input space.}
+\end{table}
+
+The $n{=}10$ result is unambiguous generalisation: 1.2M parameters trained on 14\% of the space achieve perfect accuracy. The $n{=}15$ result---training on 500{,}000 out of 1.3 trillion possible inputs and getting 99.99\% of held-out inputs exactly right---admits no interpretation other than the model having learned a general algorithm for inverse RSK.
+
+\section{Architecture Design Decisions}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{p{3cm}p{4cm}p{5cm}}
+\toprule
+Decision & Rationale & Alternative considered \\
+\midrule
+Encoder-only & All info in input, no sequential dependency & Encoder-decoder (unnecessary complexity) \\
+Structured 2D embedding & Preserves tableau geometry & Flat bracket tokens (destroys spatial info) \\
+Summed embeddings & Compact representation & Concatenation ($4\times$ wider, no gain) \\
+Mean pooling & Simple, all positions informative & CLS token / attention pooling \\
+$n$ parallel heads & Each $\sigma(i)$ is independent classification & Single autoregressive head (slower) \\
+Masked greedy decode & $O(n^2)$, sufficient accuracy & Hungarian algorithm (optimal but slower) \\
+\bottomrule
+\end{tabular}
+\caption{Key design decisions and their rationale.}
+\end{table}
+
+\section{What the Model Learned}
+
+While we lack full mechanistic interpretability, we can reason about what the model must have learned:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Shape reconstruction}: from $(P, Q)$ with the same shape~$\lambda$, the model implicitly knows $\lambda$ (encoded in which (row, col) positions have entries).
+    \item \textbf{Reverse bumping paths}: for each $Q$-entry processed in decreasing order, the model determines which $P$-entry to remove and traces the reverse bumping path upward through the rows.
+    \item \textbf{Insertion order}: $Q$ records when each cell was added (entry~$i$ in~$Q$ means that cell was created at step~$i$). Processing $Q$ in reverse reconstructs the sequence of deletions.
+    \item \textbf{Value recovery}: at each step, reverse bumping from a cell recovers the original $\sigma(i)$ value---each of the model's $n$~heads predicts one of these recovered values.
+\end{enumerate}
+
+The model likely represents an approximate version of this algorithm distributed across its attention heads, with different heads specialising in different aspects of the reverse bumping computation.
+
+\section{Future Work}
+
+\begin{itemize}[nosep]
+    \item \textbf{Scale to $n{=}20{+}$}: the sampling pipeline supports any~$n$; $n{=}20$ has $2.4 \times 10^{18}$ permutations.
+    \item \textbf{Error analysis}: characterise which permutations/shapes the model struggles with at $n{=}15$.
+    \item \textbf{Attention visualisation}: examine which tokens attend to which, seeking evidence of learned bumping-path computation.
+    \item \textbf{Cylindric RSK}: Dobner~\cite{dobner2026} defined an RSK analogue for cylindric tableaux, directly relevant to earlier work on cylindric plane partitions~\cite{langer2013}. Extending the ML approach to this setting is a natural next step.
+\end{itemize}
+
+\section*{Code and Models}
+
+Source code: \url{https://github.com/RaggedR/rsk-transformer}\\
+Trained models: \url{https://huggingface.co/RobBobin/rsk-transformer}
+
+\begin{thebibliography}{9}
+
+\bibitem{schensted1961}
+C.~Schensted, \emph{Longest increasing and decreasing subsequences}, Canadian Journal of Mathematics, 13:179--191, 1961.
+
+\bibitem{knuth1970}
+D.E.~Knuth, \emph{Permutations, matrices, and generalized Young tableaux}, Pacific Journal of Mathematics, 34(3):709--727, 1970.
+
+\bibitem{langer2013}
+R.~Langer, \emph{Cylindric plane partitions, Lambda determinants, Commutants in semicircular systems}, PhD thesis, Universit\'{e} Paris-Est, 2013. \href{https://arxiv.org/abs/2110.12629}{arXiv:2110.12629}.
+
+\bibitem{raschka2024}
+S.~Raschka, \emph{Build a Large Language Model (From Scratch)}, Manning, 2024.
+
+\bibitem{pnnl}
+PNNL, \emph{ML4AlgComb: Machine Learning for Algebraic Combinatorics}, \url{https://github.com/pnnl/ML4AlgComb/tree/master/rsk}.
+
+\bibitem{acdrepo}
+ACDRepo, \emph{Robinson--Schensted--Knuth Correspondence datasets}, \url{https://huggingface.co/ACDRepo}.
+
+\bibitem{dobner2026}
+M.~Dobner, \emph{An RSK analogue for cylindric tableaux}, 2026. \href{https://arxiv.org/abs/2603.09119}{arXiv:2603.09119}.
+
+\end{thebibliography}
+
+\end{document}
