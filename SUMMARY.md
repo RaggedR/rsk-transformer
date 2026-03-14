@@ -10,7 +10,7 @@ The **Robinson-Schensted-Knuth correspondence** is a bijection central to algebr
 
 **Forward** (σ → P, Q): Schensted row insertion — scan each σ(i), bump entries rightward through rows, record where new cells appear.
 
-**Inverse** (P, Q → σ): Reverse bumping — process Q entries in decreasing order, reverse the insertion path in P to recover each σ(i).
+**Inverse** (P, Q → σ): Reverse bumping — process Q entries in decreasing order, reverse the insertion path in P to recover each σ(i). For a detailed treatment of both directions, including Viennot's shadow method and Fomin's growth diagram framework, see [2, Chapter 2, §2.1–2.2, pp. 25–43]. The reverse algorithm specifically is described in [2, §2.2.5, p. 41].
 
 We train a neural network to learn the **inverse direction**: given P and Q, predict σ.
 
@@ -99,6 +99,7 @@ The difference: GPT processes a 1D sequence of words, so one positional embeddin
 **Why sum rather than concatenate.** Concatenating the four vectors would give a 512-dimensional input per token. Summing keeps it at 128 dimensions, relying on the fact that in high-dimensional space the model can learn roughly orthogonal directions for the different properties.
 
 [1] S. Raschka, *Build a Large Language Model (From Scratch)*, Manning, 2024.
+[2] R. Langer, *Cylindric plane partitions, Lambda determinants, Commutants in semicircular systems*, PhD thesis, Université Paris-Est, 2013. [arXiv:2110.12629](https://arxiv.org/abs/2110.12629).
 
 ### Complete Model Code
 

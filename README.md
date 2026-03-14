@@ -2,7 +2,7 @@
 
 A neural network that learns the **inverse Robinson-Schensted-Knuth correspondence**: given a pair of standard Young tableaux (P, Q), predict the permutation σ that produced them.
 
-Achieves **100% exact-match accuracy** on held-out test data for permutations up to n=10, significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb) which only achieved weak baselines on this task.
+Achieves **100% exact-match accuracy** on held-out test data for permutations up to n=10, significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb/tree/master/rsk) which only achieved weak baselines on this task.
 
 For a detailed writeup of the architecture, training, and results, see [SUMMARY.md](SUMMARY.md).
 
@@ -102,7 +102,7 @@ train.py    Training loop, masked greedy decoding, evaluation
 
 The [RSK correspondence](https://en.wikipedia.org/wiki/Robinson%E2%80%93Schensted%E2%80%93Knuth_correspondence) is a bijection between permutations σ ∈ S_n and pairs (P, Q) of standard Young tableaux of the same shape λ ⊢ n. It is central to algebraic combinatorics, connecting representation theory, symmetric functions, and enumerative combinatorics.
 
-The **forward** direction (σ → P, Q) uses Schensted row insertion (the bumping algorithm). The **inverse** (P, Q → σ) uses reverse bumping, processing entries in decreasing order. This project trains a neural network to learn the inverse direction.
+The **forward** direction (σ → P, Q) uses Schensted row insertion (the bumping algorithm). The **inverse** (P, Q → σ) uses reverse bumping, processing entries in decreasing order. For a detailed treatment, see [Langer (2013), Chapter 2, §2.1–2.2, pp. 25–43](https://arxiv.org/abs/2110.12629). This project trains a neural network to learn the inverse direction.
 
 ## Why Not Memorisation?
 
@@ -125,5 +125,5 @@ If you use this work, please cite:
 
 ## Acknowledgements
 
-- [PNNL ML4AlgComb](https://github.com/pnnl/ML4AlgComb) for the original benchmark and HuggingFace datasets
+- [PNNL ML4AlgComb](https://github.com/pnnl/ML4AlgComb/tree/master/rsk) for the original benchmark and HuggingFace datasets
 - [ACDRepo](https://huggingface.co/ACDRepo) for pre-computed RSK datasets
