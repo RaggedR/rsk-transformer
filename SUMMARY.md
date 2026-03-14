@@ -330,6 +330,20 @@ The backbone dominates. Changing n only affects the embedding tables and head si
 | Loss | Cross-entropy (summed over n heads) |
 | Early stopping | Patience 10 on val greedy exact match |
 
+**Hyperparameter selection.** These are standard transformer training defaults (AdamW with LR 3 × 10⁻⁴, cosine schedule, pre-norm). No systematic hyperparameter search was performed — the model converged with the first configuration tried, suggesting the task is not hyperparameter-sensitive given the right inductive bias.
+
+### Hardware & Training Time
+
+All training was done on an **Apple M4 Max** (MacBook Pro) using **PyTorch MPS** backend.
+
+| n | Tokens/sample | Epoch time | Epochs to converge | Total wall time |
+|---|--------------|------------|-------------------|----------------|
+| 8 | 16 | ~15s | 23 | ~8 min |
+| 10 | 20 | ~35s | 28 | ~17 min |
+| 15 | 30 | 10–18 min (variable) | 24+ | ~6–10 hours |
+
+At n=15, epoch times varied significantly due to intermittent MPS thermal throttling — some epochs took over 2 hours instead of the typical 10–18 minutes. No multi-GPU or cloud compute was used; the entire project was trained on a single laptop.
+
 ## Data
 
 | n | |S_n| | Source | Train | Val | Test |
@@ -348,7 +362,7 @@ The HuggingFace datasets (ACDRepo) enumerate all n! permutations with an 80/20 t
 |---|------|---------------|------------------|------------------|-------------|------------|
 | 8 | 40,320 | 72% | 99.95% | 99.80% | 99.98% | 23 |
 | 10 | 3,628,800 | 14% | **100.00%** | **100.00%** | **100.00%** | 28 |
-| 15 | 1.3 × 10¹² | 0.00004% | **99.05%** (epoch 19, training) | 97.5% | 99.8% | — |
+| 15 | 1.3 × 10¹² | 0.00004% | **99.65%** | 99.08% | 99.94% | 24 |
 
 ### n=8 Details
 - Converged at epoch 23, early-stopped at ~33
@@ -360,11 +374,12 @@ The HuggingFace datasets (ACDRepo) enumerate all n! permutations with an 80/20 t
 - Both argmax AND greedy hit 100% on 50,000 test samples — the model's per-position predictions are so confident that it never assigns the same value to two positions
 - Val loss reached 0.0000 (below float display precision)
 
-### n=15 Details (in progress, epoch 19)
-- 99.05% greedy exact = 49,525 out of 50,000 permutations exactly right
-- Greedy-argmax gap: 99.05% vs 97.5% = decoder fixing ~775 violations out of 50,000
-- Still improving ~0.3-0.5% per epoch
-- Training slowed by intermittent thermal throttling on MPS (some epochs took 2+ hours instead of 10-18 minutes)
+### n=15 Details
+- Converged at epoch 24
+- 99.65% greedy exact = 49,825 out of 50,000 permutations exactly right
+- Greedy-argmax gap: 99.65% vs 99.08% = greedy decoder fixing ~285 permutation violations
+- Per-position accuracy 99.94% = ~450 individual position errors across 50,000 × 15 = 750,000 predictions
+- Training slowed by intermittent thermal throttling on MPS (some epochs took 2+ hours instead of the typical 10–18 minutes)
 
 ## The Memorisation Question
 
@@ -419,7 +434,7 @@ train.py     — Training loop, masked greedy decoding, evaluation metrics
 
 ## What's Next
 
-1. **n=15 convergence** — currently at 99.05%, still climbing
+1. **n=15 convergence** — reached 99.65% at epoch 24, retraining in progress
 2. **Baseline MLP comparison** — quantify the contribution of structured encoding vs flat features
 3. **Scale to n=20+** — the sampling pipeline supports any n; n=20 has 2.4 × 10¹⁸ permutations
 4. **HuggingFace publication** — model weights, code, and results

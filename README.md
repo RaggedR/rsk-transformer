@@ -10,7 +10,7 @@ Achieves **100% exact-match accuracy** on held-out test data for permutations up
 |---|---------|--------------|-------------|-----------------|------------|
 | 8 | 40,320 | 29,031 (72% of S_n) | 1,202,368 | 99.95% | 23 |
 | 10 | 3,628,800 | 500,000 (14% of S_n) | 1,207,012 | **100.00%** | 28 |
-| 15 | 1.3 × 10¹² | 500,000 (0.00004%) | 1,225,057 | *training* | — |
+| 15 | 1.3 × 10¹² | 500,000 (0.00004%) | 1,225,057 | **99.65%** | 24 |
 
 The n=10 result rules out memorisation: a 1.2M-parameter model trained on 14% of the permutation space achieves perfect accuracy on 50,000 unseen test permutations. The same architecture (without scaling) is applied to all values of n.
 
@@ -81,6 +81,7 @@ python rsk.py
 --d-model N               Transformer dimension (default: 128)
 --num-layers N            Transformer layers (default: 6)
 --nhead N                 Attention heads (default: 8)
+--resume                  Resume training from existing checkpoint
 ```
 
 For a detailed writeup of the architecture, training, and results, see [SUMMARY.md](SUMMARY.md).

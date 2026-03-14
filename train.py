@@ -201,6 +201,7 @@ def train(
     train_size: int | None = None,
     val_size: int | None = None,
     test_size: int | None = None,
+    resume: bool = False,
 ):
     """
     Full training pipeline.
@@ -211,6 +212,7 @@ def train(
         source: "hf" for HuggingFace, "generate" for our own data
         model_config: override model config
         train_config: override train config
+        resume: if True, load existing checkpoint and continue training
     """
     if model_config is None:
         model_config = ModelConfig(n=n)
@@ -267,14 +269,32 @@ def train(
     ckpt_dir = Path(train_config.checkpoint_dir) / f"{model_name}_n{n}"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    # Training loop
+    # Resume from checkpoint if requested
+    start_epoch = 1
     best_val_exact = 0.0
     patience_counter = 0
+
+    if resume:
+        ckpt_path = ckpt_dir / "best.pt"
+        if ckpt_path.exists():
+            print(f"\nResuming from {ckpt_path}...")
+            ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+            model.load_state_dict(ckpt["model_state_dict"])
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            start_epoch = ckpt["epoch"] + 1
+            best_val_exact = ckpt["val_metrics"].get("greedy_exact_match", 0.0)
+            # Advance scheduler to the right step
+            steps_done = len(train_loader) * ckpt["epoch"]
+            for _ in range(steps_done):
+                scheduler.step()
+            print(f"  Resumed at epoch {start_epoch}, best greedy={best_val_exact:.4f}")
+        else:
+            print(f"\nNo checkpoint found at {ckpt_path}, starting fresh.")
 
     print(f"\nTraining for up to {train_config.epochs} epochs...")
     print(f"{'='*80}")
 
-    for epoch in range(1, train_config.epochs + 1):
+    for epoch in range(start_epoch, train_config.epochs + 1):
         t0 = time.time()
 
         train_metrics = train_one_epoch(
@@ -350,6 +370,7 @@ if __name__ == "__main__":
     parser.add_argument("--d-model", type=int, default=128)
     parser.add_argument("--num-layers", type=int, default=6)
     parser.add_argument("--nhead", type=int, default=8)
+    parser.add_argument("--resume", action="store_true", help="Resume from existing checkpoint")
     args = parser.parse_args()
 
     model_config = ModelConfig(
@@ -374,4 +395,5 @@ if __name__ == "__main__":
         train_size=args.train_size,
         val_size=args.val_size,
         test_size=args.test_size,
+        resume=args.resume,
     )
