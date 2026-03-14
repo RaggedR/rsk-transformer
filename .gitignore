@@ -1,0 +1,7 @@
+checkpoints/
+__pycache__/
+*.pyc
+*.pdf
+CLAUDE.md
+LESSONS.md
+.DS_Store
