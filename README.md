@@ -1,14 +1,18 @@
 # Learning the RSK Correspondence with Transformers
 
-A neural network that learns the **inverse Robinson-Schensted-Knuth correspondence**: given a pair of standard Young tableaux (P, Q), predict the permutation σ that produced them.
+A transformer that learns **inverse combinatorial bijections** — the Robinson-Schensted-Knuth correspondence (permutations and matrices) and the Hillman-Grassl correspondence (reverse plane partitions). The same architecture handles all tasks without modification.
 
-Achieves **100% exact-match accuracy** on held-out test data for n=10 and **99.99%** for n=15 (1.3 trillion permutations), significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb/tree/master/rsk) which only achieved weak baselines on this task.
+Achieves **100% exact-match accuracy** on held-out test data for permutations at n=10, **99.99%** at n=15 (1.3 trillion permutations), **100%** on 3×3 matrix RSK, and **100%** on reverse plane partitions of shape (4,3,2,1) — significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb/tree/master/rsk) which only achieved weak baselines.
 
 For a detailed writeup of the architecture, training, and results, see [SUMMARY.md](SUMMARY.md).
 
 **Links**: [Trained models (HuggingFace)](https://huggingface.co/RobBobin/rsk-transformer) | HuggingFace datasets: [n=8](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_8), [n=9](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_9), [n=10](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_10)
 
 ## Results
+
+### Experiment 1: Permutation RSK (σ → SYT pair)
+
+Given a pair of standard Young tableaux (P, Q), predict the permutation σ.
 
 | n | \|S_n\| | Training data | Source | Model params | Test exact match | Best epoch |
 |---|---------|--------------|--------|-------------|-----------------|------------|
@@ -17,6 +21,32 @@ For a detailed writeup of the architecture, training, and results, see [SUMMARY.
 | 15 | 1.3 × 10¹² | 500,000 (0.00004%) | sampling | 1,225,057 | **99.99%** | 52 |
 
 The n=10 result rules out memorisation: a 1.2M-parameter model trained on 14% of the permutation space achieves perfect accuracy on 50,000 unseen test permutations. At n=15 (1.3 trillion permutations), the same architecture trained on 0.00004% of the space gets 49,995 out of 50,000 held-out permutations exactly right — unambiguous algorithmic generalisation.
+
+### Experiment 2: Full Matrix RSK (matrix → SSYT pair)
+
+Given a pair of semistandard Young tableaux (P, Q) from Knuth's full RSK, recover the biword (and hence the matrix). **Same model, same embedding, same architecture** — only the task flag changes.
+
+| Experiment | \|λ\| | Classes | Training data | Test exact match | Per-position | Best epoch |
+|-----------|-------|---------|--------------|-----------------|-------------|------------|
+| 3×3, N=10 | 10 | 3 | 500,000 | **100.00%** | **100.00%** | 18 |
+| 4×4, N=20 | 20 | 4 | 500,000 | **99.32%** | **99.96%** | 20 |
+| 5×5, N=30 | 30 | 5 | 2,000,000 | **96.79%** | **99.87%** | 16 |
+
+The results are data-limited, not architecture-limited: per-position accuracy is 99.87%+ across all experiments, and the exact-match gaps are explained by independent errors compounding across positions ((0.9987)^30 ≈ 96.2%, matching the observed 96.79%).
+
+### Experiment 3: Reverse Plane Partitions (Hillman-Grassl)
+
+Given a reverse plane partition (RPP) of shape λ, recover the arbitrary filling via the inverse [Hillman-Grassl correspondence](https://en.wikipedia.org/wiki/Hillman%E2%80%93Grassl_correspondence). **Same model architecture** — the only change is that the input is a single filling (not a pair), so `tableau_emb(0)` is used for all tokens.
+
+| Shape λ | Type | \|λ\| | Classes | Training data | Test exact match | Per-position | Best epoch |
+|---------|------|-------|---------|--------------|-----------------|-------------|------------|
+| (4,3,2,1) | Staircase | 10 | 5 | 500,000 | **100.00%** | **100.00%** | 23 |
+| (6,4,2) | Wide | 12 | 5 | 500,000 | **99.99%** | **100.00%** | 17 |
+| (2,2,2,2,2,1) | Tall | 11 | 5 | 500,000 | **99.99%** | **100.00%** | 36 |
+
+The Hillman-Grassl bijection maps non-negative integer fillings of shape λ to reverse plane partitions (weakly increasing rows and columns) of the same shape, with weight preservation: Σ RPP[r][c] = Σ filling[r][c] × hook_length(r,c). This is a fundamentally different bijection from RSK — it involves zigzag paths through the Young diagram rather than Schensted insertion — yet the same transformer architecture learns it to near-perfect accuracy.
+
+Tall shapes converge slower (36 epochs vs 17-23) because the Hillman-Grassl zigzag paths are longer, creating longer-range dependencies for attention to capture.
 
 ## Key Idea: Structured 2D Token Embeddings
 
@@ -48,6 +78,8 @@ Input: (P, Q) as 2n structured tokens
 ```bash
 pip install torch datasets
 
+# --- Experiment 1: Permutation RSK ---
+
 # Train on n=10 with random sampling
 python train.py --model encoder --n 10 --source sample --train-size 500000 --batch-size 512
 
@@ -57,7 +89,33 @@ python train.py --model encoder --n 8 --source hf
 # Train on any n (sampling scales to arbitrary size)
 python train.py --model encoder --n 20 --source sample --train-size 1000000
 
-# Verify RSK implementation (round-trip bijection for S_1 through S_6)
+# --- Experiment 2: Full Matrix RSK ---
+
+# 3×3 matrices with entry sum 10
+python train.py --model encoder --task matrix --a-dim 3 --b-dim 3 --total-n 10 \
+    --source sample --train-size 500000
+
+# 4×4 matrices with entry sum 20
+python train.py --model encoder --task matrix --a-dim 4 --b-dim 4 --total-n 20 \
+    --source sample --train-size 500000
+
+# 5×5 matrices with entry sum 30 (2M training samples)
+python train.py --model encoder --task matrix --a-dim 5 --b-dim 5 --total-n 30 \
+    --source sample --train-size 2000000 --batch-size 512
+
+# --- Experiment 3: Reverse Plane Partitions ---
+
+# Staircase shape (4,3,2,1) with max filling value 4
+python train.py --model encoder --task rpp --shape 4,3,2,1 --max-entry 4 \
+    --source sample --train-size 500000
+
+# Wide shape (6,4,2)
+python train.py --model encoder --task rpp --shape 6,4,2 --max-entry 4 \
+    --source sample --train-size 500000
+
+# --- Verification ---
+
+# Verify RSK + Hillman-Grassl round-trip bijections
 python rsk.py
 ```
 
@@ -73,6 +131,7 @@ python rsk.py
 
 ```
 --model {encoder,mlp}     Model architecture (default: encoder)
+--task {permutation,matrix,rpp}  Task type (default: permutation)
 --n N                     Permutation size (default: 8)
 --source {hf,generate,sample}  Data source (default: hf)
 --train-size N            Training samples for --source sample (default: 500000)
@@ -86,6 +145,15 @@ python rsk.py
 --num-layers N            Transformer layers (default: 6)
 --nhead N                 Attention heads (default: 8)
 --resume                  Resume training from existing checkpoint
+
+# Matrix-specific options:
+--a-dim N                 Matrix rows (for --task matrix)
+--b-dim N                 Matrix cols (for --task matrix)
+--total-n N               Total matrix entries |λ| (for --task matrix)
+
+# RPP-specific options:
+--shape 4,3,2,1           Partition shape (for --task rpp)
+--max-entry N             Max filling value (for --task rpp)
 ```
 
 ## Project Structure

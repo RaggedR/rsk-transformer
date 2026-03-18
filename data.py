@@ -12,7 +12,10 @@ from __future__ import annotations
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 
-from rsk import rsk_forward, tableau_positions, Tableau
+from rsk import (
+    rsk_forward, rsk_forward_biword, matrix_to_biword, tableau_positions, Tableau,
+    hillman_grassl_forward, sample_filling, Filling,
+)
 from config import ModelConfig, TrainConfig
 
 
@@ -150,6 +153,134 @@ class RSKSamplingDataset(Dataset):
         return values, positions, target
 
 
+class WordSamplingDataset(Dataset):
+    """
+    On-the-fly RSK dataset for words w ∈ {1,...,k}^m.
+
+    Samples random words and computes RSK at access time.
+    Target is the word itself (0-indexed), not a permutation.
+    """
+
+    def __init__(self, m: int, k: int, size: int, seed: int | None = None):
+        self.m = m  # word length (= seq_len)
+        self.k = k  # alphabet size (= vocab_size)
+        self.size = size
+        self.rng = torch.Generator()
+        if seed is not None:
+            self.rng.manual_seed(seed)
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Random word: m values from {1,...,k}
+        word = (torch.randint(1, self.k + 1, (self.m,), generator=self.rng)).tolist()
+        P, Q = rsk_forward(word)
+        values, positions = encode_tableaux(P, Q)
+        # 0-indexed targets for cross-entropy
+        target = torch.tensor([v - 1 for v in word], dtype=torch.long)
+        return values, positions, target
+
+
+class MatrixSamplingDataset(Dataset):
+    """
+    On-the-fly RSK dataset for non-negative integer matrices A ∈ ℕ^{a×b}.
+
+    Samples random matrices with fixed entry sum total_n = |λ|,
+    computes biword RSK, and returns (P, Q) tokens with bottom-line targets.
+
+    Target is the bottom line of the two-line array (0-indexed), not the matrix.
+    This gives |λ| classification heads over {1,...,b}, matching the growth diagram.
+    """
+
+    def __init__(self, a: int, b: int, total_n: int, size: int, seed: int | None = None):
+        self.a = a
+        self.b = b
+        self.total_n = total_n
+        self.size = size
+        self.rng = torch.Generator()
+        if seed is not None:
+            self.rng.manual_seed(seed)
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Random matrix: place total_n balls into a*b bins
+        bins = torch.randint(0, self.a * self.b, (self.total_n,), generator=self.rng)
+        flat = torch.zeros(self.a * self.b, dtype=torch.long)
+        flat.scatter_add_(0, bins, torch.ones(self.total_n, dtype=torch.long))
+        A = flat.reshape(self.a, self.b).tolist()
+
+        top, bottom = matrix_to_biword(A)
+        P, Q = rsk_forward_biword(top, bottom)
+        values, positions = encode_tableaux(P, Q)
+
+        # 0-indexed targets: bottom line values are in {1,...,b}
+        target = torch.tensor([v - 1 for v in bottom], dtype=torch.long)
+        return values, positions, target
+
+
+def encode_single_filling(filling: Filling) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Encode a single filling (RPP or arbitrary) into token representations.
+
+    Each cell becomes a token with (value, row, col, tableau_id=0).
+    Unlike encode_tableaux which handles a (P, Q) pair, this handles one filling.
+
+    Returns:
+        values: LongTensor of shape (|λ|,) — entry values
+        positions: LongTensor of shape (|λ|, 3) — [row, col, tableau_id=0]
+    """
+    values = []
+    positions = []
+    for row_idx, row in enumerate(filling):
+        for col_idx, val in enumerate(row):
+            values.append(val)
+            positions.append([row_idx, col_idx, 0])
+
+    return torch.tensor(values, dtype=torch.long), torch.tensor(positions, dtype=torch.long)
+
+
+class RPPSamplingDataset(Dataset):
+    """
+    On-the-fly Hillman-Grassl dataset for RPP task.
+
+    Samples random fillings, computes forward HG to get RPP, returns:
+    - Input: RPP tokens (structured, weakly increasing)
+    - Target: filling values in reading order (unconstrained)
+
+    This mirrors the RSK pattern: structured input → unstructured target.
+    """
+
+    def __init__(
+        self, shape: tuple[int, ...], max_entry: int, size: int, seed: int | None = None,
+    ):
+        self.shape = list(shape)
+        self.max_entry = max_entry
+        self.size = size
+        import random
+        self.rng = random.Random(seed)
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        filling = sample_filling(self.shape, self.max_entry, self.rng)
+        rpp = hillman_grassl_forward(self.shape, filling)
+
+        # Input: RPP as structured tokens
+        values, positions = encode_single_filling(rpp)
+
+        # Target: filling values in reading order (row by row, left to right)
+        target = torch.tensor(
+            [filling[r][c] for r in range(len(self.shape)) for c in range(self.shape[r])],
+            dtype=torch.long,
+        )
+
+        return values, positions, target
+
+
 def generate_our_dataset(n: int) -> list[dict]:
     """
     Generate all (P, Q, σ) triples for S_n using our RSK implementation.
@@ -177,17 +308,27 @@ def make_dataloaders(
     train_size: int | None = None,
     val_size: int | None = None,
     test_size: int | None = None,
+    task: str = "permutation",
+    vocab_size: int | None = None,
+    a_dim: int | None = None,
+    b_dim: int | None = None,
+    shape: tuple[int, ...] | None = None,
+    max_entry: int | None = None,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """
     Create train/val/test DataLoaders.
 
     Args:
-        n: permutation size
+        n: permutation size (also used as seq_len for permutations)
         train_config: training configuration
         source: "hf" for HuggingFace, "generate" for enumeration, "sample" for random sampling
         train_size: for source="sample", number of training examples
         val_size: for source="sample", number of validation examples
         test_size: for source="sample", number of test examples
+        task: "permutation", "word", or "matrix"
+        vocab_size: alphabet size k for words (ignored for permutations)
+        a_dim: number of rows for matrix task
+        b_dim: number of columns for matrix task
 
     Returns:
         (train_loader, val_loader, test_loader)
@@ -201,9 +342,30 @@ def make_dataloaders(
         if test_size is None:
             test_size = 50_000
 
-        train_ds = RSKSamplingDataset(n, train_size, seed=train_config.seed)
-        val_ds = RSKSamplingDataset(n, val_size, seed=train_config.seed + 1)
-        test_ds = RSKSamplingDataset(n, test_size, seed=train_config.seed + 2)
+        if task == "rpp":
+            if shape is None or max_entry is None:
+                raise ValueError("shape and max_entry are required for task='rpp'")
+            train_ds = RPPSamplingDataset(shape, max_entry, train_size, seed=train_config.seed)
+            val_ds = RPPSamplingDataset(shape, max_entry, val_size, seed=train_config.seed + 1)
+            test_ds = RPPSamplingDataset(shape, max_entry, test_size, seed=train_config.seed + 2)
+        elif task == "matrix":
+            if a_dim is None or b_dim is None:
+                raise ValueError("a_dim and b_dim are required for task='matrix'")
+            train_ds = MatrixSamplingDataset(a_dim, b_dim, n, train_size, seed=train_config.seed)
+            val_ds = MatrixSamplingDataset(a_dim, b_dim, n, val_size, seed=train_config.seed + 1)
+            test_ds = MatrixSamplingDataset(a_dim, b_dim, n, test_size, seed=train_config.seed + 2)
+        elif task == "word":
+            if vocab_size is None:
+                raise ValueError("vocab_size (k) is required for task='word'")
+            train_ds = WordSamplingDataset(n, vocab_size, train_size, seed=train_config.seed)
+            val_ds = WordSamplingDataset(n, vocab_size, val_size, seed=train_config.seed + 1)
+            test_ds = WordSamplingDataset(n, vocab_size, test_size, seed=train_config.seed + 2)
+        else:
+            train_ds = RSKSamplingDataset(n, train_size, seed=train_config.seed)
+            val_ds = RSKSamplingDataset(n, val_size, seed=train_config.seed + 1)
+            test_ds = RSKSamplingDataset(n, test_size, seed=train_config.seed + 2)
+    elif task in ("word", "matrix", "rpp"):
+        raise ValueError(f"{task} task only supports source='sample'")
     else:
         if source == "hf":
             train_data, test_data = load_hf_dataset(n)
@@ -263,3 +425,46 @@ if __name__ == "__main__":
     print(f"\nn=4, first item:")
     print(f"  values={vals}, positions={pos}, target={target}")
     print(f"  sigma (1-indexed) = {[t.item() + 1 for t in target]}")
+
+    # Test WordSamplingDataset
+    print("\nWord dataset test (m=8, k=5):")
+    wds = WordSamplingDataset(m=8, k=5, size=10, seed=42)
+    vals, pos, target = wds[0]
+    print(f"  values shape={vals.shape}, positions shape={pos.shape}, target shape={target.shape}")
+    print(f"  target (0-indexed) = {target.tolist()}")
+    print(f"  word (1-indexed) = {[t.item() + 1 for t in target]}")
+    # Verify target values are in range [0, k-1]
+    assert target.min() >= 0 and target.max() < 5, f"Target out of range: {target}"
+    print("  Target range OK")
+
+    # Test MatrixSamplingDataset
+    print("\nMatrix dataset test (a=3, b=3, N=10):")
+    mds = MatrixSamplingDataset(a=3, b=3, total_n=10, size=10, seed=42)
+    vals, pos, target = mds[0]
+    print(f"  values shape={vals.shape}, positions shape={pos.shape}, target shape={target.shape}")
+    print(f"  target (0-indexed) = {target.tolist()}")
+    print(f"  bottom line (1-indexed) = {[t.item() + 1 for t in target]}")
+    # Verify: 2*N tokens, N target positions, target values in [0, b-1]
+    assert vals.shape == (20,), f"Expected values shape (20,), got {vals.shape}"
+    assert pos.shape == (20, 3), f"Expected positions shape (20, 3), got {pos.shape}"
+    assert target.shape == (10,), f"Expected target shape (10,), got {target.shape}"
+    assert target.min() >= 0 and target.max() < 3, f"Target out of range: {target}"
+    print("  Shapes and target range OK")
+
+    # Test RPPSamplingDataset
+    print("\nRPP dataset test (shape=(3,2,1), max_entry=3):")
+    shape_rpp = (3, 2, 1)
+    size_rpp = sum(shape_rpp)  # = 6
+    rds = RPPSamplingDataset(shape=shape_rpp, max_entry=3, size=10, seed=42)
+    vals, pos, target = rds[0]
+    print(f"  values shape={vals.shape}, positions shape={pos.shape}, target shape={target.shape}")
+    print(f"  values (RPP entries) = {vals.tolist()}")
+    print(f"  target (filling entries) = {target.tolist()}")
+    # Verify shapes: |λ| tokens, |λ| target positions, target in [0, max_entry]
+    assert vals.shape == (size_rpp,), f"Expected values shape ({size_rpp},), got {vals.shape}"
+    assert pos.shape == (size_rpp, 3), f"Expected positions shape ({size_rpp}, 3), got {pos.shape}"
+    assert target.shape == (size_rpp,), f"Expected target shape ({size_rpp},), got {target.shape}"
+    assert target.min() >= 0 and target.max() <= 3, f"Target out of range: {target}"
+    # All tableau_ids should be 0 (single filling, not a pair)
+    assert (pos[:, 2] == 0).all(), "All tableau_ids should be 0 for RPP"
+    print("  Shapes and target range OK")

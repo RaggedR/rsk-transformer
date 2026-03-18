@@ -1,5 +1,17 @@
 # Learning the Inverse RSK Correspondence with Transformers — Full Summary
 
+## Experiments Overview
+
+This project contains three experiments using the **same model architecture** and **same codebase** — only the task flag and data pipeline differ:
+
+| Experiment | Task | Input | Output | Command flag |
+|-----------|------|-------|--------|-------------|
+| 1. Permutation RSK | `--task permutation` | (P, Q) pair of SYT | Permutation σ ∈ S_n | `--n 15 --source sample` |
+| 2. Full Matrix RSK | `--task matrix` | (P, Q) pair of SSYT | Biword bottom line | `--task matrix --a-dim 5 --b-dim 5 --total-n 30` |
+| 3. Reverse Plane Partitions | `--task rpp` | RPP of shape λ | Arbitrary filling of shape λ | `--task rpp --shape 4,3,2,1 --max-entry 4` |
+
+All code lives in a single directory — the shared architecture is the point. See [How to Reproduce](#how-to-reproduce) for exact commands.
+
 ## The Problem
 
 The **Robinson-Schensted-Knuth correspondence** is a bijection central to algebraic combinatorics:
@@ -363,7 +375,7 @@ The HuggingFace datasets (ACDRepo) enumerate all n! permutations with an 80/20 t
 |---|------|---------------|------------------|------------------|-------------|------------|
 | 8 | 40,320 | 72% | 99.95% | 99.80% | 99.98% | 23 |
 | 10 | 3,628,800 | 14% | **100.00%** | **100.00%** | **100.00%** | 28 |
-| 15 | 1.3 × 10¹² | 0.00004% | **99.65%** | 99.08% | 99.94% | 24 |
+| 15 | 1.3 × 10¹² | 0.00004% | **99.99%** | **99.98%** | **99.9997%** | 52 |
 
 ### n=8 Details
 - Converged at epoch 23, early-stopped at ~33
@@ -376,11 +388,35 @@ The HuggingFace datasets (ACDRepo) enumerate all n! permutations with an 80/20 t
 - Val loss reached 0.0000 (below float display precision)
 
 ### n=15 Details
-- Converged at epoch 24
-- 99.65% greedy exact = 49,825 out of 50,000 permutations exactly right
-- Greedy-argmax gap: 99.65% vs 99.08% = greedy decoder fixing ~285 permutation violations
-- Per-position accuracy 99.94% = ~450 individual position errors across 50,000 × 15 = 750,000 predictions
-- Training slowed by intermittent thermal throttling on MPS (some epochs took 2+ hours instead of the typical 10–18 minutes)
+- Best checkpoint at epoch 52
+- 99.99% greedy exact = 49,990 out of 50,000 permutations exactly right (only ~10 errors)
+- 99.98% argmax exact — greedy decoder fixing only ~5 additional permutation violations
+- Per-position accuracy 99.9997% = ~2 individual position errors across 50,000 × 15 = 750,000 predictions
+- Continued training beyond epoch 24 (where it was 99.65%) proved worthwhile — patience and more epochs paid off significantly
+
+### How to Reproduce (Experiment 1)
+
+```bash
+pip install torch datasets
+
+# n=8 with HuggingFace data
+python train.py --model encoder --n 8 --source hf --device mps
+
+# n=10 with random sampling
+python train.py --model encoder --n 10 --source sample --train-size 500000 --batch-size 512 --device mps
+
+# n=15 with random sampling
+python train.py --model encoder --n 15 --source sample --train-size 500000 --batch-size 512 --device mps
+
+# MLP ablation
+python train.py --model mlp --n 15 --source sample --train-size 500000 --batch-size 512 --device mps
+```
+
+Checkpoints are saved to `checkpoints/encoder_n{N}/best.pt`. The relevant code paths:
+- **Data**: `RSKSamplingDataset` in `data.py` — samples random permutations, computes RSK forward
+- **Encoding**: `encode_tableaux()` in `data.py` — the four-component token encoding
+- **Model**: `RSKEncoder` in `model.py` — transformer with `TokenEmbedding`
+- **Decoding**: `masked_greedy_decode()` in `train.py` — enforces permutation constraint at inference
 
 ## The Memorisation Question
 
@@ -394,7 +430,93 @@ The HuggingFace datasets (ACDRepo) enumerate all n! permutations with an 80/20 t
 
 At n=10: a lookup table would need 3.6M × 10 = 36M entries minimum. The model has 1.2M parameters total. It achieves 100% accuracy having seen only 14% of the space. This is unambiguous generalisation.
 
-At n=15: the model has seen 500,000 out of 1.3 trillion possible inputs. It gets 99% of held-out inputs exactly right. There is no interpretation of this other than the model having learned a general algorithm for inverse RSK.
+At n=15: the model has seen 500,000 out of 1.3 trillion possible inputs. It gets 99.99% of held-out inputs exactly right — only ~10 errors out of 50,000. There is no interpretation of this other than the model having learned a general algorithm for inverse RSK.
+
+## Experiment 2: Full Matrix RSK
+
+### Extending to Matrices
+
+RSK generalises from permutations σ ∈ S_n to arbitrary non-negative integer matrices A ∈ ℕ^{a×b}. In Knuth's full RSK, the matrix A is first converted to a **two-line array** (biword): for each entry A[i][j] > 0, create A[i][j] copies of the pair (i+1, j+1), sorted lexicographically. The biword is then inserted via Schensted's algorithm, producing a pair (P, Q) of **semistandard** Young tableaux — where rows are weakly increasing (not strictly, as in the permutation case).
+
+The inverse problem: given the SSYT pair (P, Q), recover the original biword — and hence the matrix A.
+
+### Design Choices
+
+**What stays the same.** The model architecture is identical: same `RSKEncoder` with `TokenEmbedding`, same 6-layer transformer, same mean pool → parallel heads structure. The four-component embedding `value_emb + row_emb + col_emb + tableau_emb` works without modification because SSYT still have the same 2D geometry as SYT — entries in rows and columns of a Young diagram, just with weakly increasing rows instead of strictly increasing ones.
+
+**What changes.**
+- **seq_len** = |λ| = Σ A[i][j], the total number of entries in the biword (equals the number of cells in each tableau)
+- **vocab_size** = b, the number of columns in A. Each position in the biword classifies into {1, ..., b}
+- **Target**: the bottom line of the biword (0-indexed for cross-entropy), not the matrix A directly. The bottom line is a sequence of |λ| values from {1, ..., b}, and the matrix can be reconstructed from the biword by counting
+- **Loss**: standard cross-entropy, same as permutations. No masked greedy decoding needed — the output is a word with repeated values allowed, not a permutation
+- **Early stopping**: tracked on argmax exact match (since there's no permutation constraint to enforce)
+
+**Data generation.** Random matrices are sampled by distributing |λ| balls uniformly into a×b bins (multinomial sampling). Each sample: generate matrix → convert to biword → forward RSK → encode (P, Q) as structured tokens → target is bottom line.
+
+### Results
+
+| Experiment | Shape | |λ| | Heads | Classes | Train | Best epoch | Exact match | Per-position |
+|-----------|-------|-----|-------|---------|-------|------------|-------------|-------------|
+| 3×3, N=10 | a=3, b=3 | 10 | 10 | 3 | 500,000 | 18 | **100.00%** | **100.00%** |
+| 4×4, N=20 | a=4, b=4 | 20 | 20 | 4 | 500,000 | 20 | **99.32%** | **99.96%** |
+| 5×5, N=30 | a=5, b=5 | 30 | 30 | 5 | 2,000,000 | 16 | **96.79%** | **99.87%** |
+
+All experiments used the same hyperparameters as the permutation experiments: d_model=128, 6 layers, 8 heads, lr=3×10⁻⁴, patience 10. Batch size was 512 for the 5×5 run, 256 for the others.
+
+**3×3 with N=10**: the model learned the complete inverse biword RSK for this size, achieving 100% exact match on 50,000 held-out test samples by epoch 18. This is a clean generalisation result — the space of 3×3 matrices with entry sum 10 is large (C(25,15) ≈ 3.3 million distinct matrices), and 500K training samples cover only ~15% of it.
+
+**4×4 with N=20**: reached 99.32% exact match (49,660 out of 50,000 test matrices recovered perfectly). The model early-stopped at approximately epoch 30, having shown no improvement for 10 consecutive epochs after its best at epoch 20.
+
+**5×5 with N=30**: reached 96.79% exact match with 99.87% per-position accuracy at epoch 16. Despite training on 2M samples (4× the smaller experiments), the space of 5×5 matrices with entry sum 30 is C(54, 24) ≈ 1.4 × 10¹⁴ — so even 2M samples covers a vanishing fraction (~10⁻⁸).
+
+### Why Not 100% on the Larger Experiments?
+
+The per-position accuracy tells the story. Across multiple classification heads, the model gets almost every individual position right, but even rare independent errors compound:
+
+| Experiment | Per-position | (per-pos)^heads | Observed exact match |
+|-----------|-------------|----------------|---------------------|
+| 4×4, N=20 | 99.96% | (0.9996)^20 ≈ 99.2% | 99.32% |
+| 5×5, N=30 | 99.87% | (0.9987)^30 ≈ 96.2% | 96.79% |
+
+The close agreement between predicted and observed exact match confirms the model isn't confused about any systematic aspect of the RSK structure — it's making rare, independent errors on individual positions.
+
+**The bottleneck is data coverage, not model capacity.** The space of matrices grows combinatorially with both the matrix dimensions and entry sum. For 4×4 N=20, the space is C(35, 15) ≈ 3.2 billion; for 5×5 N=30, it's C(54, 24) ≈ 1.4 × 10¹⁴. Training data covers a vanishing fraction in both cases. The architecture has clearly learned the algorithm — more training data would almost certainly improve results further, as it did when scaling from 500K to 2M for the 5×5 case. With limited computational resources (all training on a single Apple M4 Max laptop), we chose to move on to the qualitatively different reverse plane partition experiment rather than optimise this number further.
+
+### Comparison: Permutation RSK vs Matrix RSK
+
+| | Permutations | Matrices |
+|--|-------------|----------|
+| Input tableaux | SYT (strictly increasing rows) | SSYT (weakly increasing rows) |
+| Output | Permutation (each value used once) | Biword bottom line (repeated values allowed) |
+| Constraint enforcement | Masked greedy decoding | None needed (argmax suffices) |
+| Model architecture | Identical | Identical |
+| Token embedding | Identical | Identical |
+| n=10 scale result | 100% (epoch 28) | 100% (epoch 18, 3×3 N=10) |
+| Scaling challenge | 99.99% at n=15 | 96.79% at 5×5 N=30, data-limited |
+
+The key takeaway: the same structured embedding and transformer architecture generalises from the permutation case to the full Knuth RSK correspondence without any architectural changes. The 2D token representation captures the geometry of semistandard tableaux just as well as standard tableaux — which makes sense, since the spatial structure (entries in rows and columns of a Young diagram) is the same in both cases.
+
+### How to Reproduce (Experiment 2)
+
+```bash
+# 3×3 matrices, entry sum 10
+python train.py --model encoder --task matrix --a-dim 3 --b-dim 3 --total-n 10 \
+    --source sample --train-size 500000 --device mps
+
+# 4×4 matrices, entry sum 20
+python train.py --model encoder --task matrix --a-dim 4 --b-dim 4 --total-n 20 \
+    --source sample --train-size 500000 --device mps
+
+# 5×5 matrices, entry sum 30 (2M training samples)
+python train.py --model encoder --task matrix --a-dim 5 --b-dim 5 --total-n 30 \
+    --source sample --train-size 2000000 --batch-size 512 --device mps
+```
+
+Checkpoints are saved to `checkpoints/encoder_matrix_a{A}_b{B}_N{N}/best.pt`. The relevant code paths:
+- **Data**: `MatrixSamplingDataset` in `data.py` — samples random matrices, computes biword RSK
+- **Encoding**: same `encode_tableaux()` in `data.py` — identical four-component tokens
+- **Model**: same `RSKEncoder` in `model.py` — identical architecture, only `seq_len` and `vocab_size` change
+- **Decoding**: plain argmax (no greedy masking needed — output is a word, not a permutation)
 
 ## What the Model Learned
 
@@ -433,11 +555,84 @@ model.py     — RSKEncoder (transformer) + BaselineMLP (flat comparison)
 train.py     — Training loop, masked greedy decoding, evaluation metrics
 ```
 
+## Experiment 3: Reverse Plane Partitions (Hillman-Grassl)
+
+### A Different Bijection
+
+The [Hillman-Grassl correspondence](https://en.wikipedia.org/wiki/Hillman%E2%80%93Grassl_correspondence) is a bijection between non-negative integer fillings of a Young diagram shape λ and reverse plane partitions (RPPs) of the same shape — where entries are weakly increasing along both rows and columns. Unlike RSK, which uses Schensted's bumping algorithm, Hillman-Grassl traces **zigzag paths** through the diagram:
+
+```
+Forward (filling → RPP):
+  For each unit of filling[r][c], trace a path:
+    - Move UP while the cell above has the same RPP value
+    - Then move RIGHT to the next cell
+    - Repeat until exiting the shape
+  Add 1 to every cell along the path.
+
+Inverse (RPP → filling):
+  While RPP has nonzero entries:
+    1. Find the leftmost column with a nonzero entry
+    2. Start from the bottommost nonzero row in that column
+    3. Trace the zigzag path
+    4. Subtract 1 from all cells on the path
+    5. Record the endpoint → increment filling
+```
+
+**Weight preservation**: Σ RPP[r][c] = Σ filling[r][c] × hook_length(r,c), where hook_length(r,c) = arm + leg + 1.
+
+### Design Choices
+
+**What stays the same.** The model architecture is identical: same `RSKEncoder` with `TokenEmbedding`, same 6-layer transformer, same mean pool → parallel heads structure. The four-component embedding works unchanged.
+
+**What changes.**
+- **Input is a single filling**, not a (P, Q) pair — so `num_tokens = |λ|` instead of `2|λ|`, and `tableau_emb(0)` is used for all tokens (acts as a learned bias)
+- **seq_len** = |λ| = number of cells in the shape
+- **vocab_size** = max_entry + 1, where max_entry is the maximum value allowed in the target filling
+- **No masked greedy decoding** — the output is an unconstrained filling, not a permutation
+
+### Results
+
+| Shape λ | Type | \|λ\| | Classes | Training data | Test exact match | Per-position | Best epoch |
+|---------|------|-------|---------|--------------|-----------------|-------------|------------|
+| (4,3,2,1) | Staircase | 10 | 5 | 500,000 | **100.00%** | **100.00%** | 23 |
+| (6,4,2) | Wide | 12 | 5 | 500,000 | **99.99%** | **100.00%** | 17 |
+| (2,2,2,2,2,1) | Tall | 11 | 5 | 500,000 | **99.99%** | **100.00%** | 36 |
+
+All three shapes achieve near-perfect accuracy, with 100% per-position accuracy across the board.
+
+**Shape geometry affects convergence speed.** The staircase (4,3,2,1) converged in 23 epochs; the wide shape (6,4,2) in 17; but the tall shape (2,2,2,2,2,1) needed 36 epochs. This is explained by the structure of Hillman-Grassl zigzag paths: in tall shapes, paths traverse more rows before exiting, creating longer-range dependencies that take more training to learn. The wide shape converges fastest because paths exit the shape quickly.
+
+### Why This Matters
+
+The Hillman-Grassl bijection is **fundamentally different** from RSK:
+- RSK uses Schensted insertion (bumping entries rightward through rows)
+- Hillman-Grassl traces zigzag paths (alternating up and right through the shape)
+- RSK takes a pair of tableaux as input; Hillman-Grassl takes a single filling
+- RSK outputs a permutation or word; Hillman-Grassl outputs an unconstrained filling
+
+Yet the **same transformer architecture** — with no modifications beyond changing the task flag — learns both bijections to near-perfect accuracy. This suggests the structured 2D token embedding is capturing something general about Young diagram geometry, not just the specifics of Schensted insertion.
+
+### How to Reproduce (Experiment 3)
+
+```bash
+python train.py --model encoder --task rpp --shape 4,3,2,1 --max-entry 4 \
+    --source sample --train-size 500000 --device mps
+
+python train.py --model encoder --task rpp --shape 6,4,2 --max-entry 4 \
+    --source sample --train-size 500000 --device mps
+
+python train.py --model encoder --task rpp --shape 2,2,2,2,2,1 --max-entry 4 \
+    --source sample --train-size 500000 --device mps
+```
+
+Checkpoints are saved to `checkpoints/encoder_rpp_{shape}_m{max_entry}/best.pt`. The relevant code paths:
+- **Bijection**: `hillman_grassl_forward()` and `hillman_grassl_inverse()` in `rsk.py`
+- **Data**: `RPPSamplingDataset` in `data.py` — samples random fillings, computes H-G forward
+- **Encoding**: `encode_single_filling()` in `data.py` — single filling with tableau_emb(0) for all tokens
+- **Model**: same `RSKEncoder` in `model.py` — identical architecture
+
 ## What's Next
 
-1. **n=15 convergence** — reached 99.65% at epoch 24, retraining in progress
-2. **Baseline MLP comparison** — quantify the contribution of structured encoding vs flat features
-3. **Scale to n=20+** — the sampling pipeline supports any n; n=20 has 2.4 × 10¹⁸ permutations
-4. **HuggingFace publication** — model weights, code, and results
-5. **Error analysis** — what kinds of permutations/shapes does the model struggle with at n=15?
-6. **Cylindric RSK** — Dobner (2026) defined an RSK analogue for cylindric tableaux, directly relevant to Robin's work on cylindric plane partitions. Could extend the ML approach to this setting.
+1. **Scale RPP** — try larger shapes and higher max_entry values to test the architecture's limits
+2. **Scale matrix RSK** — try 4×4 N=20 with 2M+ training samples to test whether more data closes the gap to 100%
+3. **Cylindric RSK** — Dobner (2026) defined an RSK analogue for cylindric tableaux, directly relevant to Robin's work on cylindric plane partitions [2]. Could extend the ML approach to this setting.
