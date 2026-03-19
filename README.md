@@ -1,12 +1,12 @@
 # Learning the RSK Correspondence with Transformers
 
-A transformer that learns **inverse combinatorial bijections** — the Robinson-Schensted-Knuth correspondence (permutations and matrices) and the Hillman-Grassl correspondence (reverse plane partitions). The same architecture handles all tasks without modification.
+A transformer that learns **inverse combinatorial bijections** — the Robinson-Schensted-Knuth correspondence (permutations and matrices), the Hillman-Grassl correspondence (reverse plane partitions), and the cylindric growth diagram bijection (cylindric plane partitions). The same architecture handles all tasks without modification.
 
-Achieves **100% exact-match accuracy** on held-out test data for permutations at n=10, **99.99%** at n=15 (1.3 trillion permutations), **100%** on 3×3 matrix RSK, and **100%** on reverse plane partitions of shape (4,3,2,1) — significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb/tree/master/rsk) which only achieved weak baselines.
+Achieves **100% exact-match accuracy** on held-out test data for permutations at n=10, **99.99%** at n=15 (1.3 trillion permutations), **100%** on 3×3 matrix RSK, **100%** on reverse plane partitions of shape (4,3,2,1), and **100%** on cylindric plane partitions — significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb/tree/master/rsk) which only achieved weak baselines.
 
 For a detailed writeup of the architecture, training, and results, see [SUMMARY.md](SUMMARY.md).
 
-**Links**: [Trained models (HuggingFace)](https://huggingface.co/RobBobin/rsk-transformer) | HuggingFace datasets: [n=8](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_8), [n=9](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_9), [n=10](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_10)
+**Links**: [Trained models (HuggingFace)](https://huggingface.co/RobBobin/rsk-transformer) | [Thesis (arXiv:2110.12629)](https://arxiv.org/abs/2110.12629) | HuggingFace datasets: [n=8](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_8), [n=9](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_9), [n=10](https://huggingface.co/datasets/ACDRepo/robinson_schensted_knuth_correspondence_10)
 
 ## Results
 
@@ -47,6 +47,19 @@ Given a reverse plane partition (RPP) of shape λ, recover the arbitrary filling
 The Hillman-Grassl bijection maps non-negative integer fillings of shape λ to reverse plane partitions (weakly increasing rows and columns) of the same shape, with weight preservation: Σ RPP[r][c] = Σ filling[r][c] × hook_length(r,c). This is a fundamentally different bijection from RSK — it involves zigzag paths through the Young diagram rather than Schensted insertion — yet the same transformer architecture learns it to near-perfect accuracy.
 
 Tall shapes converge slower (36 epochs vs 17-23) because the Hillman-Grassl zigzag paths are longer, creating longer-range dependencies for attention to capture.
+
+### Experiment 4: Cylindric Plane Partitions (Growth Diagrams)
+
+Given a cylindric plane partition (CPP) with binary profile π, recover the base partition γ and the ALCD face labels via the inverse cylindric growth diagram bijection. This experiment uses the **Burge local rule** applied recursively through a cylindric growth diagram, as described in [Langer (2013), §4.2–4.3](https://arxiv.org/abs/2110.12629). **Same model architecture** — the input is a CPP encoded as (value, partition_index, part_index, 0) tokens.
+
+| Profile π | T | ALCD labels | Training data | Test exact match | Per-position | Best epoch |
+|-----------|---|-------------|--------------|-----------------|-------------|------------|
+| (1,0,1,0) | 4 | 3 | 500,000 | **100.00%** | **100.00%** | 2 |
+| (1,0,1,0,0) | 5 | 5 | 500,000 | **100.00%** | **100.00%** | 7 |
+| (1,0,1,0,1,0) | 6 | 6 | 500,000 | **100.00%** | **100.00%** | 3 |
+| (1,0,1,0,1,0,1,0) | 8 | 10 | 500,000 | **99.98%** | **100.00%** | 9 |
+
+The cylindric growth diagram bijection is qualitatively different from all previous experiments: there is no direct closed-form algorithm — the bijection is defined implicitly by the Burge local rule applied at each face of the cylindric growth diagram. The model must learn to invert a recursive process (the 𝔏_i composition from [Langer 2013, §4.2]) that peels off one ALCD label at each step by solving a local Burge equation. Despite this complexity, the transformer achieves 100% on all tested profiles.
 
 ## Key Idea: Structured 2D Token Embeddings
 
@@ -113,9 +126,19 @@ python train.py --model encoder --task rpp --shape 4,3,2,1 --max-entry 4 \
 python train.py --model encoder --task rpp --shape 6,4,2 --max-entry 4 \
     --source sample --train-size 500000
 
+# --- Experiment 4: Cylindric Plane Partitions ---
+
+# Profile (1,0,1,0) — simplest non-trivial cylindric case
+python train.py --model encoder --task cylindric --profile 1010 --max-label 3 \
+    --source sample --train-size 500000
+
+# Profile (1,0,1,0,1,0) — 6 ALCD labels
+python train.py --model encoder --task cylindric --profile 101010 --max-label 3 \
+    --source sample --train-size 500000
+
 # --- Verification ---
 
-# Verify RSK + Hillman-Grassl round-trip bijections
+# Verify RSK + Hillman-Grassl + cylindric growth diagram round-trip bijections
 python rsk.py
 ```
 
@@ -131,7 +154,7 @@ python rsk.py
 
 ```
 --model {encoder,mlp}     Model architecture (default: encoder)
---task {permutation,matrix,rpp}  Task type (default: permutation)
+--task {permutation,matrix,rpp,cylindric}  Task type (default: permutation)
 --n N                     Permutation size (default: 8)
 --source {hf,generate,sample}  Data source (default: hf)
 --train-size N            Training samples for --source sample (default: 500000)
@@ -154,16 +177,23 @@ python rsk.py
 # RPP-specific options:
 --shape 4,3,2,1           Partition shape (for --task rpp)
 --max-entry N             Max filling value (for --task rpp)
+
+# Cylindric-specific options:
+--profile 1010            Binary profile (for --task cylindric)
+--max-label N             Max ALCD face label (for --task cylindric)
+--max-gamma-parts N       Max parts in base partition γ (default: 3)
+--max-gamma-size N        Max part size in γ (default: 4)
 ```
 
 ## Project Structure
 
 ```
-rsk.py      RSK forward/inverse (Schensted insertion + reverse bumping)
+rsk.py      RSK forward/inverse, Hillman-Grassl, Burge local rule, cylindric growth diagrams
 data.py     Data pipeline: HuggingFace loading, sampling, structured encoding
 model.py    RSKEncoder (transformer) and BaselineMLP (flat comparison)
 config.py   ModelConfig and TrainConfig dataclasses
 train.py    Training loop, masked greedy decoding, evaluation
+sae/        Sparse autoencoder interpretability (see sae/CLAUDE.md)
 ```
 
 ## Background

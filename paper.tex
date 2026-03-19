@@ -41,7 +41,7 @@
 \maketitle
 
 \begin{abstract}
-We train an encoder-only transformer to learn the inverse Robinson--Schensted--Knuth (RSK) correspondence: given a pair of standard Young tableaux $(P, Q)$, predict the permutation~$\sigma$ that produced them. The key idea is to encode each tableau entry as a token with four learned embeddings (value, row, column, tableau identity), preserving the 2D geometric structure that governs Schensted insertion. On $n=10$ permutations, the model achieves \textbf{100\% exact-match accuracy} on 50,000 held-out test samples, having been trained on only 14\% of the permutation space with 1.2M parameters---ruling out memorisation. On $n=15$ (1.3 trillion permutations), training on 0.00004\% of the space yields 99.99\% exact match. This significantly improves on the PNNL ML4AlgComb benchmark, which achieved only weak baselines using flat bracket-string encoding.
+We train an encoder-only transformer to learn inverse combinatorial bijections: the Robinson--Schensted--Knuth (RSK) correspondence, the Hillman--Grassl correspondence for reverse plane partitions, and the cylindric growth diagram bijection for cylindric plane partitions. The key idea is to encode each tableau entry as a token with four learned embeddings (value, row, column, tableau identity), preserving 2D geometric structure. The same architecture handles all tasks without modification. On $n=10$ permutations, the model achieves \textbf{100\% exact-match accuracy} on 50,000 held-out test samples, having been trained on only 14\% of the permutation space with 1.2M parameters---ruling out memorisation. On $n=15$ (1.3 trillion permutations), training on 0.00004\% of the space yields 99.99\% exact match. The model also achieves 100\% on reverse plane partitions and cylindric plane partitions, the latter requiring inversion of a recursive growth diagram process with no closed-form algorithm. This significantly improves on the PNNL ML4AlgComb benchmark, which achieved only weak baselines using flat bracket-string encoding.
 \end{abstract}
 
 \section{Introduction}
@@ -259,13 +259,55 @@ While we lack full mechanistic interpretability, we can reason about what the mo
 
 The model likely represents an approximate version of this algorithm distributed across its attention heads, with different heads specialising in different aspects of the reverse bumping computation.
 
+\section{Experiment 3: Reverse Plane Partitions (Hillman--Grassl)}
+
+Given a reverse plane partition (RPP) of shape~$\lambda$, recover the arbitrary filling via the inverse Hillman--Grassl correspondence. The same model architecture is used---the only change is that the input is a single filling (not a pair), so $\mathrm{tableau\_emb}(0)$ is used for all tokens.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llrcccc}
+\toprule
+Shape $\lambda$ & Type & $|\lambda|$ & Classes & Test exact & Per-position & Best epoch \\
+\midrule
+$(4,3,2,1)$ & Staircase & 10 & 5 & \textbf{100.00\%} & \textbf{100.00\%} & 23 \\
+$(6,4,2)$ & Wide & 12 & 5 & \textbf{99.99\%} & \textbf{100.00\%} & 17 \\
+$(2,2,2,2,2,1)$ & Tall & 11 & 5 & \textbf{99.99\%} & \textbf{100.00\%} & 36 \\
+\bottomrule
+\end{tabular}
+\caption{Hillman--Grassl results (500{,}000 training samples each, max entry value 4). Tall shapes converge slower due to longer zigzag paths creating longer-range dependencies.}
+\end{table}
+
+\section{Experiment 4: Cylindric Plane Partitions}
+
+Given a cylindric plane partition (CPP) with binary profile~$\pi$, recover the base partition~$\gamma$ and the ALCD (arbitrarily labelled cylindric diagram) face labels via the inverse cylindric growth diagram bijection. This uses the \emph{Burge local rule} applied recursively through a cylindric growth diagram, as described in Langer~\cite{langer2013}, \S4.2--4.3.
+
+The cylindric bijection is qualitatively different from all previous experiments. There is no direct closed-form algorithm: the bijection $\mathrm{CPP}(\pi) \leftrightarrow (\gamma, \mathrm{ALCD}(\pi))$ is defined implicitly by the recursive $\mathfrak{L}_i$ composition~\cite{langer2013}, which peels off one ALCD label at each step by applying the Burge local rule at a face of the growth diagram. The number of ALCD labels equals the bubble-sort distance from~$\pi$ to~$\pi_{\min} = (0^n, 1^m)$.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{crrcccc}
+\toprule
+Profile $\pi$ & $T$ & Labels & Classes & Test exact & Per-position & Best epoch \\
+\midrule
+$(1,0,1,0)$ & 4 & 3 & 4 & \textbf{100.00\%} & \textbf{100.00\%} & 2 \\
+$(1,0,1,0,0)$ & 5 & 5 & 4 & \textbf{100.00\%} & \textbf{100.00\%} & 7 \\
+$(1,0,1,0,1,0)$ & 6 & 6 & 4 & \textbf{100.00\%} & \textbf{100.00\%} & 3 \\
+$(1,0,1,0,1,0,1,0)$ & 8 & 10 & 4 & \textbf{99.98\%} & \textbf{100.00\%} & 9 \\
+\bottomrule
+\end{tabular}
+\caption{Cylindric growth diagram results (500{,}000 training samples each, max label value 3). Despite the recursive, implicit nature of the bijection, the transformer achieves near-perfect accuracy on all tested profiles, including the challenging $T{=}8$ case with 10 ALCD labels.}
+\end{table}
+
+The input encoding adapts the same 4-component structure: each partition entry in the CPP becomes a token with $\mathrm{value\_emb}(v) + \mathrm{pos\_i\_emb}(i) + \mathrm{pos\_j\_emb}(j) + \mathrm{depth\_emb}(0)$, where $i$ indexes the position in the profile and $j$ indexes the part within the partition.
+
 \section{Future Work}
 
 \begin{itemize}[nosep]
     \item \textbf{Scale to $n{=}20{+}$}: the sampling pipeline supports any~$n$; $n{=}20$ has $2.4 \times 10^{18}$ permutations.
     \item \textbf{Error analysis}: characterise which permutations/shapes the model struggles with at $n{=}15$.
     \item \textbf{Attention visualisation}: examine which tokens attend to which, seeking evidence of learned bumping-path computation.
-    \item \textbf{Cylindric RSK}: Dobner~\cite{dobner2026} defined an RSK analogue for cylindric tableaux, directly relevant to earlier work on cylindric plane partitions~\cite{langer2013}. Extending the ML approach to this setting is a natural next step.
+    \item \textbf{Larger cylindric profiles}: scale the cylindric growth diagram experiments to longer profiles ($T{=}8,10$) and higher label values.
+    \item \textbf{Cylindric RSK}: Dobner~\cite{dobner2026} defined an RSK analogue for cylindric tableaux, directly relevant to the growth diagram framework in~\cite{langer2013}. Combining this with the cylindric growth diagram approach is a natural next step.
 \end{itemize}
 
 \section*{Code and Models}

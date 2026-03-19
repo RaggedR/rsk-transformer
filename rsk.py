@@ -937,6 +937,328 @@ def verify_burge_local_rule(
     return success
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cylindric growth diagrams (Robin's thesis Chapter 4)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def cylindric_inversions(profile: tuple[int, ...]) -> list[int]:
+    """Find inversion positions in a binary profile.
+
+    An inversion at position i means profile[i]=1, profile[(i+1)%T]=0.
+    These are never adjacent (the 0 after a "10" prevents the next "10").
+    """
+    T = len(profile)
+    return [i for i in range(T) if profile[i] == 1 and profile[(i + 1) % T] == 0]
+
+
+def cylindric_hook_length(i: int, j: int, k: int, T: int) -> int:
+    """Cylindric hook length of box with inversion coordinates (i, j, k).
+
+    Lemma 1.3.2: h = j - i + kT.
+    """
+    return j - i + k * T
+
+
+def _is_horizontal_strip(mu: list[int], lam: list[int]) -> bool:
+    """Check if λ/μ is a horizontal strip (at most one box per column)."""
+    mu_conj = partition_conjugate(mu) if mu else []
+    lam_conj = partition_conjugate(lam) if lam else []
+    max_len = max(len(mu_conj), len(lam_conj))
+    for j in range(max_len):
+        mc = mu_conj[j] if j < len(mu_conj) else 0
+        lc = lam_conj[j] if j < len(lam_conj) else 0
+        if lc < mc or lc > mc + 1:
+            return False
+    return True
+
+
+def is_valid_cpp(profile: tuple[int, ...], cpp: list[list[int]]) -> bool:
+    """Check if cpp is a valid cylindric plane partition with given profile.
+
+    A CPP is a sequence (μ⁰, μ¹, ..., μ^{T-1}) with μ⁰ = μ^T (periodic),
+    where consecutive partitions differ by horizontal strips according to profile.
+    """
+    T = len(profile)
+    if len(cpp) != T:
+        return False
+    if cpp[0] != cpp[-1]:  # Periodic check: μ⁰ via wrap-around
+        pass  # We check via the interlacing below
+
+    for k in range(1, T):
+        prev, cur = cpp[k - 1], cpp[k]
+        if profile[k] == 1:
+            # π_k=1: μ^k / μ^{k-1} is horizontal strip → μ^k ⊃ μ^{k-1}
+            if not _is_horizontal_strip(prev, cur):
+                return False
+        else:
+            # π_k=0: μ^{k-1} / μ^k is horizontal strip → μ^{k-1} ⊃ μ^k
+            if not _is_horizontal_strip(cur, prev):
+                return False
+
+    # Check periodic boundary: transition from μ^{T-1} to μ^0 uses profile[0]
+    if profile[0] == 1:
+        # π_0=1: μ^0 / μ^{T-1} is horizontal strip → μ^0 ⊃ μ^{T-1}
+        if not _is_horizontal_strip(cpp[T - 1], cpp[0]):
+            return False
+    else:
+        # π_0=0: μ^{T-1} / μ^0 is horizontal strip → μ^{T-1} ⊃ μ^0
+        if not _is_horizontal_strip(cpp[0], cpp[T - 1]):
+            return False
+
+    return True
+
+
+def _swap_profile(profile: tuple[int, ...], i: int) -> tuple[int, ...]:
+    """Swap positions i and (i+1)%T in profile (remove an inversion)."""
+    T = len(profile)
+    j = (i + 1) % T
+    p = list(profile)
+    p[i], p[j] = p[j], p[i]
+    return tuple(p)
+
+
+def _is_pi_min(profile: tuple[int, ...]) -> bool:
+    """Check if profile = π_min = (0^n, 1^m) (all 0s then all 1s)."""
+    n = sum(1 for x in profile if x == 0)
+    return profile == tuple([0] * n + [1] * (len(profile) - n))
+
+
+def _non_wrapping_inversions(profile: tuple[int, ...]) -> list[int]:
+    """Find non-wrapping inversions: positions i < T-1 with π_i=1, π_{i+1}=0.
+
+    These are the inversions that, when swapped, move us closer to π_min.
+    The wrapping inversion (position T-1) is excluded — it's the boundary
+    inversion of π_min that should never be touched.
+    """
+    T = len(profile)
+    return [i for i in range(T - 1) if profile[i] == 1 and profile[i + 1] == 0]
+
+
+def growth_diagram_forward(
+    profile: tuple[int, ...],
+    gamma: list[int],
+    alcd: list[int],
+) -> list[list[int]]:
+    """
+    (γ, ALCD) → CPP via recursive application of 𝔏_i (thesis §4.2).
+
+    The ALCD is a flat list of face labels consumed in order: at each
+    step, the first non-wrapping inversion is removed from the profile
+    and one label is consumed. The Burge forward rule computes the new vertex.
+
+    When π = π_min = (0^n, 1^m), the CPP is (γ,...,γ).
+
+    Args:
+        profile: binary tuple of length T
+        gamma: base partition
+        alcd: flat list of face labels, consumed left-to-right
+
+    Returns:
+        cpp: list of T partitions (the interlacing sequence)
+    """
+    T = len(profile)
+
+    if _is_pi_min(profile) or not alcd:
+        # Base case: π_min → trivial CPP
+        return [list(gamma) for _ in range(T)]
+
+    # Find the first non-wrapping inversion
+    inv_pos = _non_wrapping_inversions(profile)
+    assert inv_pos, f"Not π_min but no non-wrapping inversions: {profile}"
+
+    # Consume one label for the first inversion
+    i = inv_pos[0]
+    m = alcd[0]
+    remaining = alcd[1:]
+
+    # Remove this inversion from the profile (swap "10" → "01")
+    reduced_profile = _swap_profile(profile, i)
+
+    # Recurse: get the CPP for the reduced profile
+    cpp = growth_diagram_forward(reduced_profile, gamma, remaining)
+
+    # In the reduced profile, position i has π_i=0, π_{i+1}=1
+    # So cpp[i] is SMALLER than both neighbors (contained in both)
+    alpha = cpp[(i - 1) % T]  # left neighbor
+    beta = cpp[(i + 1) % T]   # right neighbor
+    nu = cpp[i]                # small vertex
+
+    # Apply Burge forward rule: 𝔘_{α,β}(m, ν) = λ
+    lam = burge_forward_rule(alpha, beta, m, nu)
+
+    result = list(cpp)
+    result[i] = lam
+    return result
+
+
+def growth_diagram_inverse(
+    profile: tuple[int, ...],
+    cpp: list[list[int]],
+) -> tuple[list[int], list[int]]:
+    """
+    CPP → (γ, ALCD) via recursive application of 𝔐_i (thesis §4.2).
+
+    At each step, the first non-wrapping inversion is removed: apply 𝔇
+    to extract the face label and reduce the vertex. Recurse until π = π_min.
+
+    Args:
+        profile: binary tuple of length T
+        cpp: list of T partitions
+
+    Returns:
+        gamma: base partition
+        alcd: flat list of face labels
+    """
+    T = len(profile)
+
+    if _is_pi_min(profile):
+        # Base case: π_min → all vertices should be equal (= γ)
+        gamma = cpp[0]
+        return gamma, []
+
+    # Find the first non-wrapping inversion
+    inv_pos = _non_wrapping_inversions(profile)
+    assert inv_pos, f"Not π_min but no non-wrapping inversions: {profile}"
+
+    # Process the first non-wrapping inversion
+    i = inv_pos[0]
+
+    # At inversion i: cpp[i] CONTAINS both neighbors
+    alpha = cpp[(i - 1) % T]  # left neighbor
+    beta = cpp[(i + 1) % T]   # right neighbor
+    lam = cpp[i]               # big vertex
+
+    # Apply Burge inverse rule: 𝔇_{α,β}(λ) = (m, ν)
+    m, nu = burge_inverse_rule(alpha, beta, lam)
+
+    # Reduced CPP: replace λ with ν (make position i small)
+    reduced_cpp = [list(p) for p in cpp]
+    reduced_cpp[i] = nu
+
+    # Remove this inversion from the profile (swap "10" → "01")
+    reduced_profile = _swap_profile(profile, i)
+
+    # Recurse
+    gamma, remaining = growth_diagram_inverse(reduced_profile, reduced_cpp)
+
+    return gamma, [m] + remaining
+
+
+def sample_gamma(max_parts: int, max_part_size: int, rng) -> list[int]:
+    """Sample a random partition γ with bounded parts and part sizes."""
+    num_parts = rng.randint(0, max_parts)
+    if num_parts == 0:
+        return []
+    parts = sorted([rng.randint(1, max_part_size) for _ in range(num_parts)], reverse=True)
+    return parts
+
+
+def _num_alcd_labels(profile: tuple[int, ...]) -> int:
+    """Number of ALCD labels = number of non-wrapping inversions.
+
+    This equals the number of pairs (i < j) with π_i=1, π_j=0,
+    i.e., the bubble sort distance from π to π_min = (0^n, 1^m).
+    """
+    T = len(profile)
+    # Count all pairs (i, j) with i < j, profile[i]=1, profile[j]=0
+    count = 0
+    for i in range(T):
+        if profile[i] == 1:
+            for j in range(i + 1, T):
+                if profile[j] == 0:
+                    count += 1
+    return count
+
+
+def sample_alcd(
+    profile: tuple[int, ...],
+    max_label: int,
+    rng,
+) -> list[int]:
+    """Sample a random ALCD as a flat list of face labels.
+
+    The recursive algorithm consumes one label per non-wrapping inversion
+    removal. The total number of labels equals the bubble sort distance
+    from profile to π_min (number of pairs i<j with π_i=1, π_j=0).
+
+    Returns flat list with values in {0, ..., max_label}.
+    """
+    num_labels = _num_alcd_labels(profile)
+    return [rng.randint(0, max_label) for _ in range(num_labels)]
+
+
+def verify_cylindric_bijection(
+    profile: tuple[int, ...],
+    max_label: int = 3,
+    max_gamma_parts: int = 3,
+    max_gamma_size: int = 4,
+    num_samples: int = 500,
+    verbose: bool = False,
+) -> bool:
+    """Verify cylindric growth diagram round-trip on random samples."""
+    import random
+
+    rng = random.Random(42)
+    errors = 0
+    T = len(profile)
+
+    for trial in range(num_samples):
+        gamma = sample_gamma(max_gamma_parts, max_gamma_size, rng)
+        alcd = sample_alcd(profile, max_label, rng)
+
+        # Forward: (γ, ALCD) → CPP
+        try:
+            cpp = growth_diagram_forward(profile, gamma, alcd)
+        except Exception as e:
+            if verbose:
+                print(f"FAIL trial {trial}: forward error for γ={gamma}, alcd={alcd}")
+                print(f"  {e}")
+            errors += 1
+            continue
+
+        # Verify CPP is valid
+        if not is_valid_cpp(profile, cpp):
+            if verbose:
+                print(f"FAIL trial {trial}: invalid CPP for γ={gamma}, alcd={alcd}")
+                print(f"  cpp={cpp}")
+            errors += 1
+            continue
+
+        # Inverse: CPP → (γ', ALCD')
+        try:
+            gamma_back, alcd_back = growth_diagram_inverse(profile, cpp)
+        except Exception as e:
+            if verbose:
+                print(f"FAIL trial {trial}: inverse error for cpp={cpp}")
+                print(f"  {e}")
+            errors += 1
+            continue
+
+        if gamma_back != gamma:
+            if verbose:
+                print(f"FAIL trial {trial}: γ mismatch: {gamma_back} != {gamma}")
+                print(f"  alcd={alcd}, cpp={cpp}")
+            errors += 1
+            continue
+
+        if alcd_back != alcd:
+            if verbose:
+                print(f"FAIL trial {trial}: ALCD mismatch")
+                print(f"  got:      {alcd_back}")
+                print(f"  expected: {alcd}")
+                print(f"  γ={gamma}, cpp={cpp}")
+            errors += 1
+            continue
+
+    success = errors == 0
+    if verbose or not success:
+        inv = cylindric_inversions(profile)
+        print(f"  profile={profile} (T={T}, inv={inv}): "
+              f"{num_samples - errors}/{num_samples}, {errors} errors")
+    return success
+
+
 if __name__ == "__main__":
     # Self-test: verify RSK round-trip for small n (permutations)
     print("Verifying RSK bijection (permutations)...")
@@ -1040,3 +1362,19 @@ if __name__ == "__main__":
     # Verify round-trip
     lam_back = burge_forward_rule(alpha_ex, beta_ex, m_ex, mu_ex)
     print(f"  Round-trip 𝔘: {lam_back} == {lam_ex}: {lam_back == lam_ex}")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Cylindric growth diagram self-tests
+    # ═══════════════════════════════════════════════════════════════════════════
+    print("\n" + "=" * 60)
+    print("Verifying cylindric growth diagram...")
+    for profile in [
+        (0, 1, 0),          # T=3, 1 inversion
+        (1, 0),              # T=2, 1 inversion
+        (0, 1, 0, 1),        # T=4, 2 inversions
+        (1, 0, 1, 0),        # T=4, 2 inversions
+        (0, 0, 1, 0, 1),     # T=5, 2 inversions (thesis example)
+    ]:
+        ok = verify_cylindric_bijection(profile, max_label=3,
+                                         num_samples=500, verbose=True)
+        print(f"    → {'OK' if ok else 'FAILED'}")

@@ -247,6 +247,10 @@ def train(
     b_dim: int | None = None,
     shape: tuple[int, ...] | None = None,
     max_entry: int | None = None,
+    profile: tuple[int, ...] | None = None,
+    max_label: int | None = None,
+    max_gamma_parts: int = 3,
+    max_gamma_size: int = 4,
 ):
     """
     Full training pipeline.
@@ -275,6 +279,9 @@ def train(
         print(f"Task: matrix (a={a_dim}, b={b_dim}, N={model_config.seq_len})")
     elif task == "rpp":
         print(f"Task: rpp (shape={shape}, max_entry={max_entry}, |λ|={model_config.seq_len})")
+    elif task == "cylindric":
+        print(f"Task: cylindric (profile={profile}, max_label={max_label}, "
+              f"num_labels={model_config.seq_len}, γ_max=({max_gamma_parts},{max_gamma_size}))")
 
     # Data
     print(f"\nLoading data for n={n} (source={source})...")
@@ -284,6 +291,8 @@ def train(
         task=task, vocab_size=model_config.vocab_size if task == "word" else None,
         a_dim=a_dim, b_dim=b_dim,
         shape=shape, max_entry=max_entry,
+        profile=profile, max_label=max_label,
+        max_gamma_parts=max_gamma_parts, max_gamma_size=max_gamma_size,
     )
     print(f"Train: {len(train_loader.dataset):,} | Val: {len(val_loader.dataset):,} | Test: {len(test_loader.dataset):,}")
 
@@ -328,6 +337,9 @@ def train(
     if task == "rpp":
         shape_str = "x".join(str(s) for s in shape)
         ckpt_dir = Path(train_config.checkpoint_dir) / f"{model_name}_rpp_{shape_str}_m{max_entry}"
+    elif task == "cylindric":
+        prof_str = "".join(str(b) for b in profile)
+        ckpt_dir = Path(train_config.checkpoint_dir) / f"{model_name}_cyl_{prof_str}_m{max_label}"
     elif task == "matrix":
         ckpt_dir = Path(train_config.checkpoint_dir) / f"{model_name}_matrix_a{a_dim}_b{b_dim}_N{model_config.seq_len}"
     elif task == "word":
@@ -452,7 +464,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train RSK neural network")
     parser.add_argument("--model", choices=["encoder", "leveldecoder", "mlp"], default="encoder")
     parser.add_argument("--n", type=int, default=8)
-    parser.add_argument("--task", choices=["permutation", "word", "matrix", "rpp"], default="permutation")
+    parser.add_argument("--task", choices=["permutation", "word", "matrix", "rpp", "cylindric"], default="permutation")
     parser.add_argument("--seq-len", type=int, default=None, help="Word length m (defaults to n)")
     parser.add_argument("--vocab-size", type=int, default=None, help="Alphabet size k (defaults to n)")
     parser.add_argument("--a-dim", type=int, default=None, help="Matrix rows a (for --task matrix)")
@@ -471,6 +483,10 @@ if __name__ == "__main__":
     parser.add_argument("--nhead", type=int, default=8)
     parser.add_argument("--shape", type=str, default=None, help="Partition shape for RPP (e.g. 3,2,1)")
     parser.add_argument("--max-entry", type=int, default=None, help="Max filling value for RPP")
+    parser.add_argument("--profile", type=str, default=None, help="Binary profile for cylindric (e.g. 010)")
+    parser.add_argument("--max-label", type=int, default=None, help="Max ALCD face label for cylindric")
+    parser.add_argument("--max-gamma-parts", type=int, default=3, help="Max parts in base partition γ")
+    parser.add_argument("--max-gamma-size", type=int, default=4, help="Max part size in base partition γ")
     parser.add_argument("--resume", action="store_true", help="Resume from existing checkpoint")
     args = parser.parse_args()
 
@@ -521,6 +537,54 @@ if __name__ == "__main__":
         import sys
         sys.exit(0)
 
+    elif args.task == "cylindric":
+        if args.profile is None or args.max_label is None:
+            parser.error("--task cylindric requires --profile and --max-label")
+        profile = tuple(int(b) for b in args.profile)
+        from rsk import _num_alcd_labels
+        num_labels = _num_alcd_labels(profile)
+
+        model_config = ModelConfig(
+            n=num_labels,
+            task="cylindric",
+            profile=profile,
+            max_label=args.max_label,
+            max_gamma_parts=args.max_gamma_parts,
+            max_gamma_size=args.max_gamma_size,
+            d_model=args.d_model,
+            num_layers=args.num_layers,
+            nhead=args.nhead,
+        )
+        train_config = TrainConfig(
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            device=args.device,
+        )
+
+        prof_str = "".join(str(b) for b in profile)
+        print(f"Task: cylindric (profile={prof_str}, T={len(profile)}, "
+              f"max_label={args.max_label}, num_labels={num_labels})")
+
+        train(
+            model_name=args.model,
+            n=num_labels,
+            source="sample",
+            model_config=model_config,
+            train_config=train_config,
+            train_size=args.train_size,
+            val_size=args.val_size,
+            test_size=args.test_size,
+            resume=args.resume,
+            task="cylindric",
+            profile=profile,
+            max_label=args.max_label,
+            max_gamma_parts=args.max_gamma_parts,
+            max_gamma_size=args.max_gamma_size,
+        )
+        import sys
+        sys.exit(0)
+
     elif args.task == "matrix":
         if args.a_dim is None or args.b_dim is None or args.total_n is None:
             parser.error("--task matrix requires --a-dim, --b-dim, and --total-n")
@@ -548,7 +612,7 @@ if __name__ == "__main__":
 
     # For word/matrix task, force sample source
     source = args.source
-    if args.task in ("word", "matrix", "rpp") and source != "sample":
+    if args.task in ("word", "matrix", "rpp", "cylindric") and source != "sample":
         print(f"Note: {args.task} task requires --source sample, overriding --source {source}")
         source = "sample"
 

@@ -15,6 +15,7 @@ from torch.utils.data import Dataset, DataLoader, random_split
 from rsk import (
     rsk_forward, rsk_forward_biword, matrix_to_biword, tableau_positions, Tableau,
     hillman_grassl_forward, sample_filling, Filling,
+    growth_diagram_forward, sample_gamma, sample_alcd, _num_alcd_labels,
 )
 from config import ModelConfig, TrainConfig
 
@@ -281,6 +282,79 @@ class RPPSamplingDataset(Dataset):
         return values, positions, target
 
 
+def encode_cpp(
+    cpp: list[list[int]], T: int, max_parts: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Encode a cylindric plane partition as tokens.
+
+    Each partition part becomes a token: (value, partition_index, part_index, 0).
+    Partitions are padded to max_parts with zeros.
+
+    Returns:
+        values: LongTensor of shape (T * max_parts,) — part values (0 = padding)
+        positions: LongTensor of shape (T * max_parts, 3) — [partition_idx, part_idx, 0]
+    """
+    values = []
+    positions = []
+    for k in range(T):
+        parts = cpp[k] if k < len(cpp) else []
+        for j in range(max_parts):
+            val = parts[j] if j < len(parts) else 0
+            values.append(val)
+            positions.append([k, j, 0])
+
+    return torch.tensor(values, dtype=torch.long), torch.tensor(positions, dtype=torch.long)
+
+
+class CylindricSamplingDataset(Dataset):
+    """
+    On-the-fly cylindric growth diagram dataset.
+
+    Samples (γ, ALCD), computes forward growth diagram to get CPP, returns:
+    - Input: CPP partition entries as structured tokens
+    - Target: ALCD face labels (flat list)
+    """
+
+    def __init__(
+        self,
+        profile: tuple[int, ...],
+        max_label: int,
+        max_gamma_parts: int,
+        max_gamma_size: int,
+        size: int,
+        seed: int | None = None,
+    ):
+        self.profile = profile
+        self.max_label = max_label
+        self.max_gamma_parts = max_gamma_parts
+        self.max_gamma_size = max_gamma_size
+        self.size = size
+        self.T = len(profile)
+        self.num_labels = _num_alcd_labels(profile)
+        self.max_parts = max_gamma_parts + self.num_labels
+        import random
+        self.rng = random.Random(seed)
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        gamma = sample_gamma(self.max_gamma_parts, self.max_gamma_size, self.rng)
+        alcd = sample_alcd(self.profile, self.max_label, self.rng)
+
+        # Forward: (γ, ALCD) → CPP
+        cpp = growth_diagram_forward(self.profile, gamma, alcd)
+
+        # Input: CPP as structured tokens
+        values, positions = encode_cpp(cpp, self.T, self.max_parts)
+
+        # Target: ALCD face labels (already 0-indexed, no -1 needed)
+        target = torch.tensor(alcd, dtype=torch.long)
+
+        return values, positions, target
+
+
 def generate_our_dataset(n: int) -> list[dict]:
     """
     Generate all (P, Q, σ) triples for S_n using our RSK implementation.
@@ -314,6 +388,10 @@ def make_dataloaders(
     b_dim: int | None = None,
     shape: tuple[int, ...] | None = None,
     max_entry: int | None = None,
+    profile: tuple[int, ...] | None = None,
+    max_label: int | None = None,
+    max_gamma_parts: int = 3,
+    max_gamma_size: int = 4,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """
     Create train/val/test DataLoaders.
@@ -348,6 +426,21 @@ def make_dataloaders(
             train_ds = RPPSamplingDataset(shape, max_entry, train_size, seed=train_config.seed)
             val_ds = RPPSamplingDataset(shape, max_entry, val_size, seed=train_config.seed + 1)
             test_ds = RPPSamplingDataset(shape, max_entry, test_size, seed=train_config.seed + 2)
+        elif task == "cylindric":
+            if profile is None or max_label is None:
+                raise ValueError("profile and max_label are required for task='cylindric'")
+            train_ds = CylindricSamplingDataset(
+                profile, max_label, max_gamma_parts, max_gamma_size,
+                train_size, seed=train_config.seed,
+            )
+            val_ds = CylindricSamplingDataset(
+                profile, max_label, max_gamma_parts, max_gamma_size,
+                val_size, seed=train_config.seed + 1,
+            )
+            test_ds = CylindricSamplingDataset(
+                profile, max_label, max_gamma_parts, max_gamma_size,
+                test_size, seed=train_config.seed + 2,
+            )
         elif task == "matrix":
             if a_dim is None or b_dim is None:
                 raise ValueError("a_dim and b_dim are required for task='matrix'")
@@ -364,7 +457,7 @@ def make_dataloaders(
             train_ds = RSKSamplingDataset(n, train_size, seed=train_config.seed)
             val_ds = RSKSamplingDataset(n, val_size, seed=train_config.seed + 1)
             test_ds = RSKSamplingDataset(n, test_size, seed=train_config.seed + 2)
-    elif task in ("word", "matrix", "rpp"):
+    elif task in ("word", "matrix", "rpp", "cylindric"):
         raise ValueError(f"{task} task only supports source='sample'")
     else:
         if source == "hf":

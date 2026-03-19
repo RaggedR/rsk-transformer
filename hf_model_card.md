@@ -9,6 +9,8 @@ tags:
   - semistandard-tableaux
   - reverse-plane-partitions
   - hillman-grassl
+  - cylindric-plane-partitions
+  - growth-diagrams
   - transformer
   - pytorch
 datasets:
@@ -19,12 +21,13 @@ pipeline_tag: other
 
 # RSK Transformer
 
-A transformer that learns **inverse combinatorial bijections** — the Robinson-Schensted-Knuth correspondence (permutations and matrices) and the Hillman-Grassl correspondence (reverse plane partitions). The same architecture handles all tasks without modification.
+A transformer that learns **inverse combinatorial bijections** — the Robinson-Schensted-Knuth correspondence (permutations and matrices), the Hillman-Grassl correspondence (reverse plane partitions), and the cylindric growth diagram bijection (cylindric plane partitions). The same architecture handles all tasks without modification.
 
-Achieves **100% exact-match accuracy** on held-out test data for permutations at n=10, **99.99%** at n=15 (1.3 trillion permutations), **100%** on 3×3 matrix RSK, and **100%** on reverse plane partitions of shape (4,3,2,1) — significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb/tree/master/rsk). Scales to 5×5 matrices (96.8% exact match on a space of ~10¹⁴).
+Achieves **100% exact-match accuracy** on held-out test data for permutations at n=10, **99.99%** at n=15 (1.3 trillion permutations), **100%** on 3×3 matrix RSK, **100%** on reverse plane partitions of shape (4,3,2,1), and **100%** on cylindric plane partitions — significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb/tree/master/rsk). Scales to 5×5 matrices (96.8% exact match on a space of ~10¹⁴).
 
 📄 **Paper**: [paper.pdf](paper.pdf)
 💻 **Code**: [github.com/RaggedR/rsk-transformer](https://github.com/RaggedR/rsk-transformer)
+📘 **Thesis**: [Langer (2013) — Cylindric plane partitions, Lambda determinants, Commutants in semicircular systems](https://arxiv.org/abs/2110.12629) — the mathematical foundation for the cylindric growth diagram bijection (§4.2–4.3) and generalized RSK via Fomin growth diagrams (§2.1–2.2)
 
 ## Results
 
@@ -75,6 +78,19 @@ Given a reverse plane partition (RPP) of shape λ, recover the arbitrary filling
 
 The Hillman-Grassl bijection is fundamentally different from RSK — it involves zigzag paths through the Young diagram rather than Schensted insertion — yet the same transformer architecture learns it to near-perfect accuracy. Tall shapes converge slower (36 epochs vs 17-23) because longer zigzag paths create longer-range dependencies.
 
+### Experiment 4: Cylindric Plane Partitions (Growth Diagrams)
+
+Given a cylindric plane partition (CPP) with binary profile π, recover the base partition γ and the ALCD face labels via the inverse cylindric growth diagram bijection. This uses the **Burge local rule** applied recursively through a cylindric growth diagram, as described in [Langer (2013), §4.2–4.3](https://arxiv.org/abs/2110.12629). **Same model architecture**.
+
+| Profile π | T | ALCD labels | Training data | Test exact match | Per-position | Best epoch |
+|-----------|---|-------------|--------------|-----------------|-------------|------------|
+| (1,0,1,0) | 4 | 3 | 500,000 | **100.00%** | **100.00%** | 2 |
+| (1,0,1,0,0) | 5 | 5 | 500,000 | **100.00%** | **100.00%** | 7 |
+| (1,0,1,0,1,0) | 6 | 6 | 500,000 | **100.00%** | **100.00%** | 3 |
+| (1,0,1,0,1,0,1,0) | 8 | 10 | 500,000 | **99.98%** | **100.00%** | 9 |
+
+The cylindric bijection is qualitatively different from all previous experiments: there is no direct closed-form algorithm. The bijection is defined implicitly by the Burge local rule applied at each face of the cylindric growth diagram. The model must learn to invert a recursive process (the 𝔏_i composition from [Langer 2013, §4.2](https://arxiv.org/abs/2110.12629)) that peels off one ALCD label at each step by solving a local Burge equation. Despite this complexity, the transformer achieves 100% on all tested profiles.
+
 ## Key Idea: Structured 2D Token Embeddings
 
 Previous work encoded tableaux as flat bracket strings, destroying 2D geometry. We encode each tableau entry as a token with four learned embeddings:
@@ -124,6 +140,14 @@ Input: (P, Q) as 2n structured tokens
 | `checkpoints/encoder_rpp_6x4x2_m4/best.pt` | RSKEncoder on RPP shape (6,4,2), max_entry=4 | ~1.2M |
 | `checkpoints/encoder_rpp_2x2x2x2x2x1_m4/best.pt` | RSKEncoder on RPP shape (2,2,2,2,2,1), max_entry=4 | ~1.2M |
 
+### Experiment 4: Cylindric Plane Partitions
+
+| File | Description | Parameters |
+|------|-------------|-----------|
+| `checkpoints/encoder_cyl_1010_m3/best.pt` | RSKEncoder on CPP profile (1,0,1,0), max_label=3 | ~1.2M |
+| `checkpoints/encoder_cyl_10100_m3/best.pt` | RSKEncoder on CPP profile (1,0,1,0,0), max_label=3 | ~1.2M |
+| `checkpoints/encoder_cyl_101010_m3/best.pt` | RSKEncoder on CPP profile (1,0,1,0,1,0), max_label=3 | ~1.2M |
+
 ### Loading a checkpoint
 
 ```python
@@ -160,6 +184,12 @@ python train.py --model encoder --task matrix --a-dim 5 --b-dim 5 --total-n 30 \
 python train.py --model encoder --task rpp --shape 4,3,2,1 --max-entry 4 \
     --source sample --train-size 500000
 python train.py --model encoder --task rpp --shape 6,4,2 --max-entry 4 \
+    --source sample --train-size 500000
+
+# --- Experiment 4: Cylindric Plane Partitions ---
+python train.py --model encoder --task cylindric --profile 1010 --max-label 3 \
+    --source sample --train-size 500000
+python train.py --model encoder --task cylindric --profile 101010 --max-label 3 \
     --source sample --train-size 500000
 ```
 

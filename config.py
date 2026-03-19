@@ -12,13 +12,19 @@ class ModelConfig:
     """Architecture hyperparameters."""
 
     n: int = 8  # permutation size (S_n) or default for seq_len/vocab_size
-    task: str = "permutation"  # "permutation", "word", "matrix", or "rpp"
+    task: str = "permutation"  # "permutation", "word", "matrix", "rpp", or "cylindric"
     seq_len: int | None = None  # output sequence length (m for words, defaults to n)
     vocab_size: int | None = None  # output classes per head (k for words, defaults to n)
 
     # RPP task config
     shape: tuple[int, ...] | None = None  # partition shape for RPP task
     max_entry: int | None = None  # max value in filling (target classes = max_entry + 1)
+
+    # Cylindric task config
+    profile: tuple[int, ...] | None = None  # binary profile (e.g., (0,1,0))
+    max_label: int | None = None  # max ALCD face label value
+    max_gamma_parts: int = 3  # max parts in base partition γ
+    max_gamma_size: int = 4  # max part size in base partition γ
 
     d_model: int = 128  # transformer embedding dimension
     nhead: int = 8  # number of attention heads
@@ -51,6 +57,22 @@ class ModelConfig:
             self.max_value = max(self.max_value, self.max_entry * max_hook + 1)
             self.max_rows = max(self.max_rows, len(self.shape))
             self.max_cols = max(self.max_cols, self.shape[0])
+        elif self.task == "cylindric":
+            if self.profile is None:
+                raise ValueError("profile is required for task='cylindric'")
+            if self.max_label is None:
+                raise ValueError("max_label is required for task='cylindric'")
+            from rsk import _num_alcd_labels
+            T = len(self.profile)
+            num_labels = _num_alcd_labels(self.profile)
+            self.seq_len = num_labels
+            self.vocab_size = self.max_label + 1
+            # Upper bounds for CPP partition entries
+            max_parts = self.max_gamma_parts + num_labels
+            max_cpp_val = self.max_gamma_size + self.max_label * num_labels
+            self.max_value = max(self.max_value, max_cpp_val + 1)
+            self.max_rows = max(self.max_rows, T)  # partition index in profile
+            self.max_cols = max(self.max_cols, max_parts)  # part index
         else:
             # Resolve seq_len and vocab_size: default to n for permutations
             if self.seq_len is None:
@@ -63,9 +85,18 @@ class ModelConfig:
 
     @property
     def num_tokens(self) -> int:
-        """Number of input tokens: seq_len for RPP (single filling), 2*seq_len for (P,Q) pair."""
+        """Number of input tokens.
+
+        - RPP: seq_len (single filling, not a pair)
+        - Cylindric: T × max_parts (padded partition entries)
+        - Others: 2 × seq_len (P, Q pair)
+        """
         if self.task == "rpp":
             return self.seq_len  # single filling, not a pair
+        if self.task == "cylindric":
+            T = len(self.profile)
+            max_parts = self.max_gamma_parts + self.seq_len
+            return T * max_parts
         return 2 * self.seq_len
 
     @property
