@@ -193,8 +193,28 @@ data.py     Data pipeline: HuggingFace loading, sampling, structured encoding
 model.py    RSKEncoder (transformer) and BaselineMLP (flat comparison)
 config.py   ModelConfig and TrainConfig dataclasses
 train.py    Training loop, masked greedy decoding, evaluation
-sae/        Sparse autoencoder interpretability (see sae/CLAUDE.md)
 ```
+
+## Interpretability (Work in Progress)
+
+Early mechanistic interpretability experiments on the trained models, investigating whether the transformer learned [Fomin's growth diagram local rule](https://arxiv.org/abs/2110.12629) (a single parallel operation applied at every cell) or Schensted's sequential bumping algorithm.
+
+**What we've found so far:**
+
+- On **cylindric plane partitions** (where the local rule is the *only* known algorithm), attention in the critical computation layer (Layer 2) concentrates on the partition triples where the Burge local rule operates, at 2.5–3.7× above baseline. The big/small vertex structure of the profile is visible in the attention patterns.
+- On **permutation RSK** (where both algorithms apply), the signal is weaker and inconclusive — neither growth diagrams nor bumping dominates clearly.
+- The model does not map transformer layers to recursion depth sequentially. It parallelises across heads within each layer, using different heads for different local rule applications.
+
+**What we can't say yet:** attention concentration on local rule triples is necessary but not sufficient evidence. We haven't shown the *content* of attention implements the Burge rule (the specific partition arithmetic). The model may have found a different algorithm with similar attention patterns.
+
+**Next steps:**
+
+- Probing: train linear probes to predict intermediate partition states in the growth diagram from the residual stream
+- Content analysis: examine what information flows through the attention value vectors
+- Cross-model comparison: check if attention patterns transfer between the permutation, Hillman-Grassl, and cylindric models (which all use the same Burge local rule with different boundary conditions)
+- Larger cylindric profiles (T=10, 12) for more structure to test against
+
+Interpretability code and full report: [octopus-streams/rsk](https://github.com/RaggedR/octopus-streams/tree/main/rsk)
 
 ## Background
 
