@@ -346,6 +346,8 @@ def train(
         ckpt_dir = Path(train_config.checkpoint_dir) / f"{model_name}_word_m{model_config.seq_len}_k{model_config.vocab_size}"
     else:
         ckpt_dir = Path(train_config.checkpoint_dir) / f"{model_name}_n{n}"
+    if model_config.ablation:
+        ckpt_dir = ckpt_dir.parent / f"{ckpt_dir.name}_ablate-{model_config.ablation}"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     # Resume from checkpoint if requested
@@ -488,6 +490,9 @@ if __name__ == "__main__":
     parser.add_argument("--max-gamma-parts", type=int, default=3, help="Max parts in base partition γ")
     parser.add_argument("--max-gamma-size", type=int, default=4, help="Max part size in base partition γ")
     parser.add_argument("--resume", action="store_true", help="Resume from existing checkpoint")
+    parser.add_argument("--ablate", type=str, default=None,
+        choices=["drop-row", "drop-col", "drop-tab", "drop-row-col", "1d-pos", "concat"],
+        help="Embedding ablation mode")
     args = parser.parse_args()
 
     # Resolve seq_len and vocab_size based on task
@@ -506,6 +511,7 @@ if __name__ == "__main__":
             d_model=args.d_model,
             num_layers=args.num_layers,
             nhead=args.nhead,
+            ablation=args.ablate,
         )
         train_config = TrainConfig(
             epochs=args.epochs,
@@ -554,6 +560,7 @@ if __name__ == "__main__":
             d_model=args.d_model,
             num_layers=args.num_layers,
             nhead=args.nhead,
+            ablation=args.ablate,
         )
         train_config = TrainConfig(
             epochs=args.epochs,
@@ -602,6 +609,7 @@ if __name__ == "__main__":
         d_model=args.d_model,
         num_layers=args.num_layers,
         nhead=args.nhead,
+        ablation=args.ablate,
     )
     train_config = TrainConfig(
         epochs=args.epochs,

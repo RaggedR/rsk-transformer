@@ -37,13 +37,22 @@ class ModelConfig:
     max_rows: int = 10  # max number of rows in a tableau
     max_cols: int = 10  # max number of columns in a tableau
 
+    # Ablation config
+    ablation: str | None = None  # "drop-row", "drop-col", "drop-tab", "drop-row-col", "1d-pos", "concat"
+
     # Level decoder config
     num_decoder_layers: int = 2  # transformer decoder layers for RSKLevelDecoder
 
     # Baseline MLP config
     mlp_hidden: list[int] = field(default_factory=lambda: [256, 256, 128])
 
+    VALID_ABLATIONS = {None, "drop-row", "drop-col", "drop-tab", "drop-row-col", "1d-pos", "concat"}
+
     def __post_init__(self):
+        if self.ablation not in self.VALID_ABLATIONS:
+            raise ValueError(f"ablation must be one of {self.VALID_ABLATIONS}, got {self.ablation!r}")
+        if self.ablation == "concat" and self.d_model % 4 != 0:
+            raise ValueError(f"concat ablation requires d_model divisible by 4, got {self.d_model}")
         if self.task == "rpp":
             if self.shape is None:
                 raise ValueError("shape is required for task='rpp'")

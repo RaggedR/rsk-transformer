@@ -31,12 +31,29 @@ class TokenEmbedding(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         d = config.d_model
+        self.ablation = config.ablation
 
-        # +1 because values/positions are 0-indexed but we include 0 as padding
-        self.value_emb = nn.Embedding(config.max_value + 1, d)
-        self.row_emb = nn.Embedding(config.max_rows, d)
-        self.col_emb = nn.Embedding(config.max_cols, d)
-        self.tableau_emb = nn.Embedding(2, d)  # P=0, Q=1
+        if self.ablation == "concat":
+            # Each component gets d_model//4 dims; concat back to d_model
+            d_sub = d // 4
+            self.value_emb = nn.Embedding(config.max_value + 1, d_sub)
+            self.row_emb = nn.Embedding(config.max_rows, d_sub)
+            self.col_emb = nn.Embedding(config.max_cols, d_sub)
+            self.tableau_emb = nn.Embedding(2, d_sub)
+        elif self.ablation == "1d-pos":
+            # Replace 2D (row, col) with single sequential position
+            self.value_emb = nn.Embedding(config.max_value + 1, d)
+            self.pos_emb = nn.Embedding(config.num_tokens, d)
+            self.tableau_emb = nn.Embedding(2, d)
+        else:
+            # Standard or drop-* variants: only create what we need
+            self.value_emb = nn.Embedding(config.max_value + 1, d)
+            if self.ablation not in ("drop-row", "drop-row-col"):
+                self.row_emb = nn.Embedding(config.max_rows, d)
+            if self.ablation not in ("drop-col", "drop-row-col"):
+                self.col_emb = nn.Embedding(config.max_cols, d)
+            if self.ablation != "drop-tab":
+                self.tableau_emb = nn.Embedding(2, d)
 
         self.layer_norm = nn.LayerNorm(d)
         self.dropout = nn.Dropout(config.dropout)
@@ -54,12 +71,25 @@ class TokenEmbedding(nn.Module):
         cols = positions[:, :, 1]
         tableau_ids = positions[:, :, 2]
 
-        x = (
-            self.value_emb(values)
-            + self.row_emb(rows)
-            + self.col_emb(cols)
-            + self.tableau_emb(tableau_ids)
-        )
+        if self.ablation == "concat":
+            x = torch.cat([
+                self.value_emb(values),
+                self.row_emb(rows),
+                self.col_emb(cols),
+                self.tableau_emb(tableau_ids),
+            ], dim=-1)
+        elif self.ablation == "1d-pos":
+            seq_len = values.shape[1]
+            pos_ids = torch.arange(seq_len, device=values.device).unsqueeze(0)
+            x = self.value_emb(values) + self.pos_emb(pos_ids) + self.tableau_emb(tableau_ids)
+        else:
+            x = self.value_emb(values)
+            if hasattr(self, "row_emb"):
+                x = x + self.row_emb(rows)
+            if hasattr(self, "col_emb"):
+                x = x + self.col_emb(cols)
+            if hasattr(self, "tableau_emb"):
+                x = x + self.tableau_emb(tableau_ids)
 
         return self.dropout(self.layer_norm(x))
 
@@ -414,5 +444,14 @@ if __name__ == "__main__":
     binary_preds = (wl_level > 0).long().sum(dim=-1) - 1  # (batch, m) 0-indexed
     print(f"Reconstructed predictions shape: {binary_preds.shape}")  # (4, 15)
     assert binary_preds.shape == (4, 15)
+
+    # Test ablation variants
+    print("\n--- Ablation tests (n=8) ---")
+    for abl in ["drop-row", "drop-col", "drop-tab", "drop-row-col", "1d-pos", "concat"]:
+        abl_config = ModelConfig(n=8, ablation=abl)
+        abl_model = RSKEncoder(abl_config)
+        abl_logits = abl_model(values, positions)
+        assert abl_logits.shape == (4, 8, 8), f"Ablation {abl} failed: {abl_logits.shape}"
+        print(f"  {abl}: {abl_model.count_parameters():,} params, OK")
 
     print("\nAll tests passed!")
