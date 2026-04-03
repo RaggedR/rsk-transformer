@@ -25,7 +25,7 @@ A 1.2M-parameter transformer that learns **inverse combinatorial bijections** �
 
 Achieves **100% exact-match accuracy** on held-out test data for permutations at n=10, **99.99%** at n=15 (1.3 trillion permutations), **100%** on reverse plane partitions, and **100%** on cylindric plane partitions — significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb/tree/master/rsk).
 
-**Mechanistic interpretability via sparse autoencoders** reveals two families of features for permutation RSK (insertion-order detectors and step-specific Q-entry locators) and, for cylindric plane partitions, features aligned with Fomin's growth diagram local rules — direct evidence of the learned algorithm.
+**Embedding ablation** confirms 2D structure is essential: replacing row+column with 1D sequential position drops accuracy from 100% to 72%, and removing P-vs-Q tableau identity collapses it to 6%. **Mechanistic interpretability via sparse autoencoders** reveals two families of features for permutation RSK (insertion-order detectors and step-specific Q-entry locators) and, for cylindric plane partitions, features that fire on the specific partition triples where the Burge local rule operates — direct evidence the model has learned Fomin's growth diagram framework.
 
 📄 **Paper**: [paper.pdf](paper.pdf)
 💻 **Code**: [github.com/RaggedR/rsk-transformer](https://github.com/RaggedR/rsk-transformer)
