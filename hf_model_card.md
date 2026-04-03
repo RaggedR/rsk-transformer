@@ -21,9 +21,11 @@ pipeline_tag: other
 
 # RSK Transformer
 
-A transformer that learns **inverse combinatorial bijections** — the Robinson-Schensted-Knuth correspondence (permutations and matrices), the Hillman-Grassl correspondence (reverse plane partitions), and the cylindric growth diagram bijection (cylindric plane partitions). The same architecture handles all tasks without modification.
+A 1.2M-parameter transformer that learns **inverse combinatorial bijections** — the Robinson-Schensted-Knuth correspondence (permutations and matrices), the Hillman-Grassl correspondence (reverse plane partitions), and the cylindric growth diagram bijection (cylindric plane partitions). The same architecture handles all tasks without modification.
 
-Achieves **100% exact-match accuracy** on held-out test data for permutations at n=10, **99.99%** at n=15 (1.3 trillion permutations), **100%** on 3×3 matrix RSK, **100%** on reverse plane partitions of shape (4,3,2,1), and **100%** on cylindric plane partitions — significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb/tree/master/rsk). Scales to 5×5 matrices (96.8% exact match on a space of ~10¹⁴).
+Achieves **100% exact-match accuracy** on held-out test data for permutations at n=10, **99.99%** at n=15 (1.3 trillion permutations), **100%** on reverse plane partitions, and **100%** on cylindric plane partitions — significantly improving on the [PNNL ML4AlgComb benchmark](https://github.com/pnnl/ML4AlgComb/tree/master/rsk).
+
+**Mechanistic interpretability via sparse autoencoders** reveals two families of features for permutation RSK (insertion-order detectors and step-specific Q-entry locators) and, for cylindric plane partitions, features aligned with Fomin's growth diagram local rules — direct evidence of the learned algorithm.
 
 📄 **Paper**: [paper.pdf](paper.pdf)
 💻 **Code**: [github.com/RaggedR/rsk-transformer](https://github.com/RaggedR/rsk-transformer)
@@ -65,6 +67,20 @@ Results are data-limited, not architecture-limited: per-position accuracy is 99.
 | 15 | BaselineMLP (flat) | 133,604 | 3.07% | 0.04% | 62.02% |
 
 The MLP collapses from 95.67% to 3.07% as n increases from 10 to 15, while the transformer barely notices (100% → 99.99%). Without spatial structure, the MLP cannot coordinate predictions across positions.
+
+### Ablation: Embedding Components (n=10)
+
+| Ablation | What changes | Greedy exact | Per-position |
+|----------|-------------|-------------|-------------|
+| Full model | — | **100.00%** | 100.00% |
+| Drop row | No row embedding | **100.00%** | 100.00% |
+| Drop column | No column embedding | **99.99%** | 100.00% |
+| Concatenate | 4×32d concat, not 4×128d sum | **100.00%** | 100.00% |
+| 1D position | Sequential pos replaces row+col | 72.38% | 91.34% |
+| Drop tableau | No P-vs-Q identity | 5.79% | 58.49% |
+| Drop row+col | No spatial info | 0.00% | 9.99% |
+
+Tableau identity (P vs Q) is the single most critical component. Row and column are individually redundant (either alone suffices given the constrained tableau shape), but *some* spatial embedding is essential. 1D positional encoding recovers only 72% — 2D structure specifically is what enables learning.
 
 ### Experiment 3: Reverse Plane Partitions (Hillman-Grassl)
 
@@ -198,7 +214,7 @@ python train.py --model encoder --task cylindric --profile 101010 --max-label 3 
 ```bibtex
 @software{rsk_transformer,
   author={Langer, Robin},
-  title={Learning the RSK Correspondence with Transformers},
+  title={Learning Combinatorial Bijections with Transformers: Inverse RSK, Growth Diagrams, and Interpretable Features},
   year={2026},
   url={https://github.com/RaggedR/rsk-transformer}
 }
